@@ -1,0 +1,14 @@
+{
+  "version": "1.0.8",
+  "build": "20261005.6",
+  "architecture": "arm64",
+  "binary_sha256": "aef63707bef3374b0693ee982c8da28b38cf4ea0a2bd7d50d0898e6e2bb87ca1",
+  "signature": "ad-hoc",
+  "notarized": false,
+  "status": "prerelease",
+  "visual_acceptance": "pending-desktop-comparison",
+  "core_tests": 85,
+  "self_tests": ["presentation", "instrument", "stats", "comparison", "weekly-quota"],
+  "user_data_included": false,
+  "private_history_included": false
+}
