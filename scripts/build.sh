@@ -45,6 +45,8 @@ stage_app="$stage_root/Arqmeter.app"
 /bin/mkdir -p "$stage_app/Contents/MacOS"
 /bin/cp "$binary" "$stage_app/Contents/MacOS/Arqmeter"
 /bin/cp "$project_dir/Resources/Info.plist" "$stage_app/Contents/Info.plist"
+/bin/mkdir -p "$stage_app/Contents/Resources"
+/bin/cp "$project_dir/Resources/claude-statusline-fragment.sh" "$stage_app/Contents/Resources/claude-statusline-fragment.sh"
 /usr/bin/codesign --force --deep --sign - "$stage_app"
 arqmeter_validate_bundle "$stage_app"
 

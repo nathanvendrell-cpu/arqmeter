@@ -13,6 +13,7 @@
 !Tests/**
 !Resources/
 !Resources/Info.plist
+!Resources/claude-statusline-fragment.sh
 !scripts/
 !scripts/build.sh
 !scripts/update-lib.sh

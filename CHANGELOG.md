@@ -1,5 +1,20 @@
 # Changements
 
+## 1.0.10 — 2026-10-05
+
+- Un cadre de barre de menus commun : logo Claude + quota restant, logo
+  OpenAI/Codex + quota restant. Les deux limites restent distinctes.
+- Quota Claude issu uniquement des champs officiels de la status line locale,
+  avec état absent/périmé honnête et aucune interrogation d’un modèle.
+- Fragment de liaison facultatif, compatible avec une status line existante,
+  sans modification automatique des réglages utilisateur ; guard de rollback.
+- Rafraîchissement du petit cache local toutes les deux secondes, sans modifier
+  la cadence d’interrogation officielle Codex.
+- Aucun changement du HUD, de ses interactions ou des historiques.
+- 92 tests moteur et six autotests conservés ; contrôle du dessin hors écran
+  distinct d’une observation native de la barre de menus.
+- Le candidat Token Value 1.0.9 n’est pas inclus.
+
 ## 1.0.8 — 2026-10-05
 
 - Verre clair avec titres, chiffres, unités et graduations foncés ; aiguilles

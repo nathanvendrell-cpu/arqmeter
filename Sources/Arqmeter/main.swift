@@ -399,7 +399,7 @@ final class OfficialUsageMonitor {
             return
         }
         sourcePreferences.onChange = { [weak self] in self?.updateStatusTitle() }
-        statusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusTitle() }
         }
         updateStatusTitle()
@@ -477,18 +477,10 @@ final class OfficialUsageMonitor {
 
     private func updateStatusTitle() {
         guard !nativeQA else { return }
-        let primary = sourcePreferences.primaryID
-        guard primary == "codex" else {
-            statusItem.button?.title = SourceDisplay.menuName(primary)
-            statusItem.button?.toolTip = "\(SourceDisplay.name(primary)) · mesures observées dans ARQMETER"
-            return
-        }
-        let remaining = ControlReadout.quota(dashboard.remainingPercent, sampledAt: dashboard.officialSampledAt,
-                                            now: Date(), resetsAt: dashboard.resetsAt)
-        let fresh = remaining != nil
-        statusItem.button?.title = fresh ? "\(remaining.map(String.init) ?? "—") %" :
-            "— % !"
-        statusItem.button?.toolTip = fresh ? "Quota officiel Codex à jour" : "Quota officiel Codex indisponible ou périmé"
+        guard let button = statusItem?.button else { return }
+        ProviderQuotaMenu.apply(to: button, codexRemaining: dashboard.remainingPercent,
+            codexSampledAt: dashboard.officialSampledAt, codexReset: dashboard.resetsAt,
+            claude: ClaudeQuotaReport.read(), now: Date())
     }
 
     private func openControlCenter() {
@@ -580,7 +572,26 @@ final class OfficialUsageMonitor {
     }
 }
 
-if let index = CommandLine.arguments.firstIndex(of: "--render-glass-hud"), CommandLine.arguments.count > index + 1 {
+if CommandLine.arguments.contains("--menu-quota-self-test") {
+    do { try MainActor.assumeIsolated { try ProviderQuotaMenu.selfTest() }; exit(EXIT_SUCCESS) }
+    catch { exit(EXIT_FAILURE) }
+} else if let index = CommandLine.arguments.firstIndex(of: "--render-menu-quotas"), CommandLine.arguments.count > index + 1 {
+    do { try MainActor.assumeIsolated { try ProviderQuotaMenu.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1])) }; exit(EXIT_SUCCESS) }
+    catch { exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--capture-claude-status") {
+    do {
+        var data = Data()
+        while data.count <= 256 * 1024,
+              let chunk = try FileHandle.standardInput.read(upToCount: min(8192, 256 * 1024 + 1 - data.count)), !chunk.isEmpty {
+            data.append(chunk)
+        }
+        try ClaudeQuotaReport.decodeStatusLine(data, receivedAt: Date()).save()
+        exit(EXIT_SUCCESS)
+    } catch { exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--menu-bar-native-test") {
+    MainActor.assumeIsolated { ProviderQuotaMenu.nativeTest() }
+    exit(EXIT_SUCCESS)
+} else if let index = CommandLine.arguments.firstIndex(of: "--render-glass-hud"), CommandLine.arguments.count > index + 1 {
     do {
         try MainActor.assumeIsolated {
             try GlassRecipe.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))

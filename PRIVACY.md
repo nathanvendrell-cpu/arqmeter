@@ -12,6 +12,17 @@ et provenance restent dans les historiques locaux. Les prompts et réponses
 ne sont pas stockés dans la base d’événements normalisés. Les suggestions et
 essais restent des analyses locales ; aucune économie non mesurée n’est promise.
 
+La liaison Claude optionnelle reçoit le JSON officiel de la status line, puis
+ne conserve que les pourcentages d’usage, resets, heure de réception et version
+CLI assainie dans `claude-quota.json` (permissions 0600). Les champs de contexte,
+prompts, transcripts, workspace, session et identité du compte sont ignorés.
+Aucune requête modèle ou réseau n’est lancée par cette liaison. Elle ne remplace
+pas votre status line et n’exploite pas les anciens caches d’autres applications.
+
+Les logos vectoriels identifient Claude et OpenAI/Codex, sans endorsement.
+Leurs tracés proviennent des favicons officiels ; ils ne deviennent pas la marque
+d’Arqmeter et ne signifient pas une affiliation à Anthropic ou OpenAI.
+
 ## Dans ce dépôt
 
 La publication est un instantané des sources nécessaires, des tests construits,
