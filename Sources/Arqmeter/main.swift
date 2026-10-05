@@ -379,6 +379,7 @@ final class OfficialUsageMonitor {
         presentationConfigured = true
         if !nativeQA {
             ClaudeOfficialPage.shared.startIfEnabled()
+            ClaudeDesktopQuotaReader.shared.startIfSelected()
             statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             statusItem.button?.title = "— %"
             statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
@@ -567,6 +568,7 @@ final class OfficialUsageMonitor {
 
     func applicationWillTerminate(_ notification: Notification) {
         ClaudeOfficialPage.shared.stop()
+        ClaudeDesktopQuotaReader.shared.stop()
         statusTimer?.invalidate()
         statusTimer = nil
         dashboard.stopAllLive()
@@ -580,6 +582,9 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
         ?? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("provider-qa-history.sqlite3")
     do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.native(database: database) }; exit(EXIT_SUCCESS) }
     catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--claude-desktop-probe") {
+    MainActor.assumeIsolated { ClaudeDesktopQuotaReader.probe() }
+    exit(EXIT_SUCCESS)
 } else if CommandLine.arguments.contains("--claude-web-self-test") {
     do { try MainActor.assumeIsolated { try ClaudeOfficialPage.lifecycleSelfTest() }; exit(EXIT_SUCCESS) }
     catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }

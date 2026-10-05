@@ -7,9 +7,12 @@ import ArqmeterCore
                       codexReset: Date?, claude: ClaudeQuotaReport?, now: Date,
                       orderedIDs: [String] = ["claude-code", "codex"],
                       webClaude: ClaudeWebQuotaReport? = ClaudeWebQuotaReport.readActive(),
-                      webSelected: Bool = UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey)) {
+                      webSelected: Bool = UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey),
+                      desktop: ClaudeDesktopQuotaReport? = ClaudeDesktopQuotaReport.readActive(),
+                      desktopSelected: Bool = UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey)) {
         let codex = ControlReadout.quota(codexRemaining, sampledAt: codexSampledAt, now: now, resetsAt: codexReset)
-        let readout = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected, at: now)
+        let readout = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
+            desktop: desktop, desktopSelected: desktopSelected, at: now)
         let claudeCurrent = readout?.preferred
         let claudeValue = claudeCurrent?.window.remainingPercent
         let claudeText = claudeValue.map { "\($0) %" } ?? "— %"
@@ -26,7 +29,8 @@ import ArqmeterCore
                 ?? current.window.resetLabel.map { " · \($0)" } ?? ""
             claudeTip = "Claude · \(claudeText) restants · \(current.period.rawValue)\(reset) · \(readout.provenance) · observé à \(date.string(from: readout.observedAt))"
         } else {
-            claudeTip = "Claude · quota absent ou périmé · connecter la page officielle dans les réglages ou attendre le relevé Claude Code"
+            claudeTip = desktopSelected ? "Claude · " + ClaudeDesktopQuotaReader.shared.state :
+                "Claude · quota absent ou périmé · choisir la source dans les réglages"
         }
         let codexTip = codex.map { "Codex · \($0) % restants · 7 jours" + (codexReset.map { " · reset \(date.string(from: $0))" } ?? "") } ?? "Codex · quota officiel absent ou périmé"
         let tips = orderedIDs.map { id in
@@ -85,7 +89,9 @@ import ArqmeterCore
         let codex = OfficialUsageReader().snapshot()
         let now = Date(), report = ClaudeQuotaReport.read()
         let claude = ClaudePlanQuotaReadout.make(statusLine: report, web: ClaudeWebQuotaReport.readActive(),
-            webSelected: UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey), at: now)?.preferred?.window.remainingPercent
+            webSelected: UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey),
+            desktop: ClaudeDesktopQuotaReport.readActive(),
+            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey), at: now)?.preferred?.window.remainingPercent
         let value = ControlReadout.quota(codex?.remainingPercent, sampledAt: codex?.timestamp, now: now, resetsAt: codex?.resetsAt)
         let menuImage = image(claude: claude.map { "\($0) %" } ?? "— %", codex: value.map { "\($0) %" } ?? "— %",
             orderedIDs: SourceDisplayPreferences.shared.orderedVisibleIDs)

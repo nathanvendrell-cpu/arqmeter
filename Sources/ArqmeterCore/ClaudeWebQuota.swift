@@ -93,7 +93,20 @@ public struct ClaudePlanQuotaReadout: Sendable {
             }
         return values.min { $0.window.remainingPercent < $1.window.remainingPercent }
     }
-    public static func make(statusLine: ClaudeQuotaReport?, web: ClaudeWebQuotaReport?, webSelected: Bool = false, at now: Date) -> Self? {
+    public static func make(statusLine: ClaudeQuotaReport?, web: ClaudeWebQuotaReport?, webSelected: Bool = false,
+                            desktop: ClaudeDesktopQuotaReport? = nil, desktopSelected: Bool = false, at now: Date) -> Self? {
+        if desktopSelected {
+            guard let desktop else { return nil }
+            func convert(_ period: ClaudeQuotaReport.Period) -> Window? {
+                desktop.currentWindow(period, at: now).map {
+                    Window(remainingPercent: $0.remainingPercent, resetLabel: $0.resetLabel, resetsAt: nil)
+                }
+            }
+            let session = convert(.fiveHour), weekly = convert(.sevenDay)
+            guard session != nil || weekly != nil else { return nil }
+            return Self(observedAt: desktop.observedAt, provenance: "Application Claude · panneau Utilisation · lecture macOS",
+                        session: session, weekly: weekly)
+        }
         if webSelected {
             guard let web else { return nil }
             func convert(_ period: ClaudeQuotaReport.Period) -> Window? {

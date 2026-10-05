@@ -4,7 +4,15 @@ Un centre de pilotage macOS pour la consommation observée de Codex, Claude Code
 Gemini CLI et Ollama. Les sources restent séparées : un volume de tokens n’est
 pas un quota, et un ancien journal n’est pas une session en cours.
 
-## Version 1.0.12
+## Version 1.0.13
+
+Un lecteur facultatif peut maintenant observer les compteurs du panneau
+**Utilisation de Claude Desktop déjà connecté**, sans seconde connexion.
+Il requiert une autorisation macOS propre à Arqmeter et le panneau Utilisation
+ouvert dans la fenêtre Claude observée. Ce mode reste expérimental : sa lecture
+par l'application installée n'a pas encore pu être validée, faute d'autorisation
+Accessibilité. La présence de compteurs dans Claude ne vaut pas preuve de leur
+acquisition par Arqmeter. Voir les limites et le réglage ci-dessous.
 
 La barre de menus réunit désormais les logos Claude et Codex, chacun avec son
 pourcentage **restant**, dans un seul cadre. Les limites ne sont jamais additionnées.
@@ -69,7 +77,38 @@ identifiant de compte, credential, capture de bureau ou journal utilisateur
 n’est inclus dans ce dépôt. Les tests utilisent des exemples construits.
 Voir [PRIVACY.md](PRIVACY.md).
 
-### Limite Claude : liaison locale facultative
+### Claude Desktop déjà connecté : lecture native facultative (expérimental)
+
+Dans Arqmeter, Réglages → « Utiliser Claude déjà connecté » sélectionne cette
+source. Si nécessaire, « Autoriser la lecture » demande le réglage macOS :
+Réglages Système → Confidentialité et sécurité → Accessibilité → Arqmeter.
+L'utilisateur accorde lui-même cette autorisation. Le bundle doit être celui
+effectivement installé ; une autorisation de Codex ou d'un outil de recette
+ne prouve pas une autorisation propre au service Arqmeter. Une nouvelle signature
+ad hoc peut nécessiter de vérifier à nouveau cette autorisation après mise à jour.
+
+Dans Claude, ouvrir Paramètres → Utilisation et garder ce panneau ouvert, y
+compris en arrière-plan. Le lecteur observe passivement la fenêtre principale :
+il ne bascule pas les paramètres, ne change pas de conversation et n'active ni
+ne redémarre Claude. Revenir à la conversation dans cette même fenêtre rend
+donc le panneau indisponible ; ce n'est pas un accès permanent aux limites du compte.
+
+La lecture est tentée toutes les 60 secondes sans requête modèle. Seuls les
+compteurs de session et de semaine identifiés et leurs libellés de reset sont
+admis ; contexte et parts par produit ne sont pas des quotas. L'unité numérique
+doit être établie par des bornes natives ou un libellé « % utilisés » concordant.
+Une lecture partielle par dépassement du budget est refusée. Le travail AX est
+hors du thread UI, avec délai cible de 2 s et timeouts par appel : ces bornes OS
+sont best-effort, pas une garantie de temps réel dur.
+
+Une mesure observée depuis plus de trois minutes, un droit manquant ou un panneau
+absent n'est jamais remplacé par un quota fictif ni par une autre source de compte.
+La date est celle de la lecture locale, pas d'une interrogation serveur : relire
+le panneau ne force pas sa mise à jour. Les deux fenêtres restent indépendantes.
+Un reset fourni sous forme de texte est conservé comme texte, sans fabriquer
+une date absolue. Aucun cookie, credential ou cache privé de Claude n'est lu.
+
+### Limite Claude Code : liaison locale facultative
 
 Claude Code peut fournir les champs officiels `rate_limits` à sa status line
 pour un abonnement Pro/Max, après la première réponse API de la session.
@@ -119,10 +158,16 @@ périmètre fonctionnel actuel, pas une extension ChatGPT déjà disponible.
 
 ## Validation de cette préversion
 
-111 tests du moteur passent sur le candidat des sources et de la connexion.
-Les neuf tests ciblés des conseils passent après leur correction, dont cinq
-nouveaux cas (les autres preuves restent à leur portée). Sept autotests du
-binaire et 18 contrôles de DOM construits passent.
+Sur 1.0.13, 35 tests ciblés passent (Claude natif, liaisons Claude existantes et
+conseils), ainsi que les sept autotests du binaire. Les neuf nouveaux tests natifs
+emploient des exemples construits ; ils ne prouvent pas une lecture native réelle.
+Un échec d'arrondi fraction → pourcentage a été conservé puis corrigé avec une
+tolérance de deux ULP près des entiers, sans arrondir les vrais décimaux.
+Les 111 tests moteur et les 18 contrôles de DOM de la précédente connexion ne
+sont pas rejoués ni présentés comme une nouvelle preuve d'authentification.
+Le service installé rapporte explicitement une autorisation Accessibilité
+manquante : acquisition native, deux observations successives en arrière-plan
+et fraîcheur serveur ne sont pas déclarées validées.
 Le nouveau cadre a été contrôlé par rendu AppKit hors écran, pas par une capture
 de la barre de menus installée ; cette observation native reste à confirmer.
 Le déplacement et le

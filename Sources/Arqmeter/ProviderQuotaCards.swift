@@ -93,6 +93,8 @@ struct ProviderQuotaCards: View {
     let webClaude: ClaudeWebQuotaReport?
     let webSelected: Bool
     let now: Date
+    var desktop: ClaudeDesktopQuotaReport? = nil
+    var desktopSelected: Bool = false
     @State private var dragging: String?
 
     var body: some View {
@@ -126,7 +128,8 @@ struct ProviderQuotaCards: View {
             }
             HStack(alignment: .top, spacing: 14) {
                 ForEach(ClaudeQuotaReport.Period.allCases, id: \.rawValue) { period in
-                    let window = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected, at: now)?.window(period)
+                    let window = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
+                        desktop: desktop, desktopSelected: desktopSelected, at: now)?.window(period)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(period.rawValue).font(.system(size: 12, weight: .medium))
                             .foregroundStyle(InstrumentTheme.secondary)
@@ -144,7 +147,8 @@ struct ProviderQuotaCards: View {
                     .accessibilityElement(children: .combine)
                 }
             }
-            if let readout = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected, at: now) {
+            if let readout = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
+                desktop: desktop, desktopSelected: desktopSelected, at: now) {
                 Text("\(readout.provenance) · \(readout.observedAt.formatted(.dateTime.hour().minute()))")
                     .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
             } else {
@@ -206,7 +210,9 @@ struct LiveProviderQuotaCards: View {
     @State private var now = Date()
     var body: some View {
         ProviderQuotaCards(dashboard: dashboard, preferences: preferences,
-            historical: historical, claude: report, webClaude: webReport, webSelected: connection.selected, now: now)
+            historical: historical, claude: report, webClaude: webReport, webSelected: connection.selected, now: now,
+            desktop: ClaudeDesktopQuotaReport.readActive(),
+            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey))
             .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) {
                 now = $0; report = ClaudeQuotaReport.read(); webReport = connection.report
             }

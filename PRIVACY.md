@@ -12,7 +12,25 @@ et provenance restent dans les historiques locaux. Les prompts et réponses
 ne sont pas stockés dans la base d’événements normalisés. Les suggestions et
 essais restent des analyses locales ; aucune économie non mesurée n’est promise.
 
-La liaison Claude optionnelle reçoit le JSON officiel de la status line, puis
+Le mode Claude Desktop optionnel lit passivement l'accessibilité de l'application
+officielle déjà connectée, après autorisation macOS accordée par l'utilisateur.
+Il parcourt les rôles/structures de sa fenêtre principale et ne lit les libellés
+que près des compteurs de quota reconnus, pas les champs de saisie ni les textes
+des conversations. Il ne clique, ne bascule ni n'active l'application Claude.
+Il ne lit pas ses cookies, identifiants, keychain, bases privées ou transcripts.
+
+`claude-desktop-quota.json` (0600) contient uniquement l'heure d'observation,
+les deux pourcentages utilisés et leurs libellés de reset réellement disponibles.
+`claude-desktop-reader-state.json` (0600) décrit le droit du processus Arqmeter,
+son PID/bundle ID, l'heure et le résultat de la tentative, et éventuellement sa
+durée et un booléen de maintien du focus. Ni arbre AX ni contenu de conversation
+ne sont enregistrés. Les fichiers restent locaux et ne sont pas publiés.
+Les tentatives sont espacées de 60 secondes, sans requête modèle ou réseau.
+Le panneau Utilisation doit rester accessible ; l'heure d'observation ne prouve
+pas que Claude a réinterrogé son serveur. Les timeouts et limites de parcours sont
+best-effort ; un parcours incomplet n'est pas converti en mesure.
+
+La liaison Claude Code optionnelle reçoit le JSON officiel de la status line, puis
 ne conserve que les pourcentages d’usage, resets, heure de réception et version
 CLI assainie dans `claude-quota.json` (permissions 0600). Les champs de contexte,
 prompts, transcripts, workspace, session et identité du compte sont ignorés.

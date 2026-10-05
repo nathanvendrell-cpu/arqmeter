@@ -1253,6 +1253,7 @@ struct SourceSettingsView: View {
                 .buttonStyle(.borderless)
             }
             Divider()
+            ClaudeDesktopConnectionControls()
             ClaudeOfficialConnectionControls(connection: connection)
             Picker("Source principale des détails", selection: Binding(
                 get: { preferences.primaryID },

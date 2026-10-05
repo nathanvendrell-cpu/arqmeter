@@ -31,6 +31,8 @@ import ArqmeterCore
     var selected: Bool { defaults.bool(forKey: ClaudeWebQuotaReport.selectedKey) }
     func startIfEnabled() { if enabled && selected { stopped = false; refresh() } }
     func connect() {
+        ClaudeDesktopQuotaReader.shared.stop()
+        defaults.set(false, forKey: ClaudeDesktopQuotaReport.selectedKey)
         stopped = false
         defaults.set(true, forKey: ClaudeWebQuotaReport.selectedKey)
         prepare()
@@ -44,6 +46,8 @@ import ArqmeterCore
         // Keep browser's session and old measurements; do not delete user data.
     }
     func useCodeSource() {
+        ClaudeDesktopQuotaReader.shared.stop()
+        defaults.set(false, forKey: ClaudeDesktopQuotaReport.selectedKey)
         suspend(); defaults.set(false, forKey: ClaudeWebQuotaReport.selectedKey)
         state = "Source choisie : Claude Code"
     }
