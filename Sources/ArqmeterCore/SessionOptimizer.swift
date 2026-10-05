@@ -41,9 +41,12 @@ public enum SessionOptimizer {
     public static func analyze(_ records: [UnifiedUsageRecord]) -> [SessionRecommendation] {
         let unique = UsageAggregate(records: records).records
         let sessions = Dictionary(grouping: unique, by: { "\($0.harnessID):\($0.sessionID)" })
-        let totals = sessions.mapValues { session -> Int64? in
-            guard session.allSatisfy({ measured($0.inputTokens) != nil && measured($0.outputTokens) != nil }) else { return nil }
-            return safeSum(session.compactMap { measured($0.inputTokens) })
+        // Compare context per response, not total work: a longer session is not
+        // an inefficient one. Unknown/conflicting metadata cannot form peers.
+        let averages = sessions.mapValues { session -> Double? in
+            guard session.allSatisfy({ measured($0.inputTokens).map { $0 >= 0 } == true }),
+                  let total = safeSum(session.compactMap { measured($0.inputTokens) }) else { return nil }
+            return Double(total) / Double(session.count)
         }
         var result: [SessionRecommendation] = []
         for (key, unsorted) in sessions {
@@ -54,6 +57,12 @@ public enum SessionOptimizer {
             let fullTokens = inputs.count == session.count && outputs.count == session.count
             let inputTotal = fullTokens ? safeSum(inputs) : nil
             let outputTotal = fullTokens ? safeSum(outputs) : nil
+            let cache = session.compactMap { measured($0.cachedInputTokens) }
+            let validCache = inputs.count == session.count && cache.count == session.count &&
+                zip(inputs, cache).allSatisfy { $0 >= 0 && $1 >= 0 && $1 <= $0 }
+            let cachedTotal = validCache ? safeSum(cache) : nil
+            let homogeneousContext = consistent(session.map(\.providerID)) != nil &&
+                consistent(session.map(\.modelID)) != nil
             let evidence = session.map(\.eventID)
             let source = first.provenance
 
@@ -62,8 +71,8 @@ public enum SessionOptimizer {
                      action: String, limitation: String) {
                 result.append(SessionRecommendation(id: "\(key):\(type.rawValue)", type: type,
                     severity: severity, confidence: confidence, harnessID: first.harnessID,
-                    sessionID: first.sessionID, modelID: first.modelID,
-                    projectPath: first.projectPath, observedData: observed, problem: problem,
+                    sessionID: first.sessionID, modelID: consistent(session.map(\.modelID)),
+                    projectPath: consistent(session.map(\.projectPath)), observedData: observed, problem: problem,
                     recommendation: action,
                     estimatedImpact: "Opportunité non quantifiée ; aucun gain avant/après mesuré.",
                     impactClassification: .theoreticalOpportunity,
@@ -71,28 +80,28 @@ public enum SessionOptimizer {
             }
 
             if fullTokens, let inputTotal, let outputTotal, session.count >= 3,
-               inputTotal >= 100_000, Double(inputTotal) >= Double(outputTotal) * 15 {
-                add(.highInputToOutput, severity: .moderate, confidence: .medium,
-                    observed: "\(inputTotal) tokens d'entrée, \(outputTotal) de sortie sur \(session.count) réponses (ratio ≥ 15:1).",
-                    problem: "Le volume de contexte est élevé par rapport à la sortie observée.",
-                    action: "Examiner le contexte envoyé à chaque réponse ; raccourcir les éléments redondants si la tâche le permet.",
-                    limitation: "La longueur de sortie ne mesure ni son utilité ni la difficulté de la tâche.")
+               inputTotal >= 100_000, outputTotal > 0, Double(inputTotal) >= Double(outputTotal) * 15 {
+                let cacheObservation = cachedTotal.map { " Dont \($0) en cache, \(inputTotal - $0) hors cache." } ?? " Cache non mesuré sur toute la session."
+                add(.highInputToOutput, severity: .info, confidence: .low,
+                    observed: "\(inputTotal) tokens d'entrée, \(outputTotal) de sortie sur \(session.count) réponses (ratio ≥ 15:1).\(cacheObservation)",
+                    problem: "Entrée élevée par rapport à la sortie : constat, pas gaspillage démontré.",
+                    action: "Ne pas réduire le contexte sur ce seul ratio. Si une redondance est confirmée, tester un contexte plus court sur un travail équivalent et vérifier qualité et tokens hors cache avant/après.",
+                    limitation: "L'entrée peut inclure du cache et du travail utile aux outils. La sortie ne mesure ni la difficulté ni la qualité ; ces tokens ne donnent pas le coût ni le quota consommé.")
             }
 
-            if inputs.count == session.count, session.count >= 6 {
+            if inputs.count == session.count, inputs.allSatisfy({ $0 >= 0 }), session.count >= 6, homogeneousContext {
                 let firstAverage = inputs.prefix(3).reduce(0.0) { $0 + Double($1) } / 3
                 let lastAverage = inputs.suffix(3).reduce(0.0) { $0 + Double($1) } / 3
                 if firstAverage > 0, lastAverage >= 20_000, lastAverage >= firstAverage * 2 {
                     add(.contextGrowth, severity: .moderate, confidence: .medium,
                         observed: "Entrée moyenne des 3 premières réponses : \(Int(firstAverage)) ; des 3 dernières : \(Int(lastAverage)) tokens (≥ 2×).",
                         problem: "Le contexte par réponse croît rapidement dans cette session.",
-                        action: "Examiner la croissance du contexte et condenser les éléments répétés avant les prochains tours.",
-                        limitation: "Une croissance peut être justifiée par une tâche plus complexe ; aucun contenu n'est inspecté.")
+                        action: "Repérer d'abord une répétition réelle. Tester uniquement les éléments confirmés redondants sur un travail équivalent, puis vérifier qualité et tokens hors cache avant/après.",
+                        limitation: "Une croissance peut être justifiée par la tâche ; elle ne prouve pas un gaspillage. Aucun contenu n'est inspecté, aucune conversation n'est compactée automatiquement.")
                 }
             }
 
-            let cache = session.compactMap { measured($0.cachedInputTokens) }
-            if inputs.count == session.count, cache.count == session.count, session.count >= 3,
+            if validCache, homogeneousContext, session.count >= 3,
                let inputTotal = safeSum(inputs), let cached = safeSum(cache), inputTotal >= 100_000,
                Double(cached) / Double(inputTotal) < 0.1 {
                 add(.lowCacheReuse, severity: .info, confidence: .medium,
@@ -114,29 +123,31 @@ public enum SessionOptimizer {
                 }
             }
 
-            if let current = totals[key] ?? nil, current >= 100_000 {
-                let peers = sessions.compactMap { otherKey, other -> Int64? in
-                    guard otherKey != key, let otherFirst = other.first,
-                          otherFirst.harnessID == first.harnessID,
-                          first.projectPath != nil,
-                          otherFirst.projectPath == first.projectPath,
-                          otherFirst.modelID == first.modelID else { return nil }
-                    return totals[otherKey] ?? nil
+            if let inputTotal, inputTotal >= 100_000, let current = averages[key] ?? nil,
+               let provider = consistent(session.map(\.providerID)),
+               let project = consistent(session.map(\.projectPath)),
+               let model = consistent(session.map(\.modelID)) {
+                let peers = sessions.compactMap { otherKey, other -> Double? in
+                    guard otherKey != key, other.first?.harnessID == first.harnessID,
+                          consistent(other.map(\.providerID)) == provider,
+                          consistent(other.map(\.projectPath)) == project,
+                          consistent(other.map(\.modelID)) == model else { return nil }
+                    return averages[otherKey] ?? nil
                 }.sorted()
                 if peers.count >= 5, let median = peers.dropFirst(peers.count / 2).first,
                    median > 0, Double(current) >= Double(median) * 3 {
-                    add(.anomalousSessionVolume, severity: .moderate, confidence: .medium,
-                        observed: "\(current) tokens d'entrée contre une médiane de \(median) sur \(peers.count) autres sessions du même harness/modèle/workspace.",
-                        problem: "Le volume est inhabituel par rapport à cet historique personnel homogène.",
-                        action: "Revoir la chronologie de cette session et identifier les tours responsables de la hausse.",
-                        limitation: "Les tâches ne sont pas nécessairement équivalentes ; la couverture historique peut être partielle.")
+                    add(.anomalousSessionVolume, severity: .info, confidence: .medium,
+                        observed: "\(Int(current)) tokens d'entrée par réponse contre une médiane de \(Int(median)) sur \(peers.count) autres sessions du même harness/provider/modèle/workspace.",
+                        problem: "Plus d'entrée par réponse que dans l'historique comparable.",
+                        action: "Identifier les tours concernés, sans réduire le contexte automatiquement. Comparer un essai de travail équivalent avec qualité, cache et tokens hors cache avant/après.",
+                        limitation: "Moyennes par réponse, pas totaux de sessions de durées différentes. Modèle et workspace homogènes ne prouvent pas que les tâches sont équivalentes ; aucun gaspillage ni gain établi.")
                 }
             }
 
-            if session.count >= 2 {
+            if session.count >= 2, session.allSatisfy({ $0.executionLocation == .local || $0.sourceKind == .ollamaServerLog }) {
                 let durations = session.compactMap { measured($0.durationSeconds) }
                 let total = durations.reduce(0, +)
-                if durations.count == session.count, total >= 600 {
+                if durations.count == session.count, durations.allSatisfy({ $0.isFinite && $0 >= 0 }), total.isFinite, total >= 600, total < Double(Int.max) {
                     add(.longLocalRequest, severity: .info, confidence: .medium,
                         observed: "\(Int(total)) secondes serveur sur \(session.count) requêtes.",
                         problem: "Cette session locale a une longue durée cumulée.",
@@ -156,10 +167,17 @@ public enum SessionOptimizer {
     private static func safeSum(_ values: [Int64]) -> Int64? {
         var total: Int64 = 0
         for value in values {
+            guard value >= 0 else { return nil }
             let (sum, overflow) = total.addingReportingOverflow(value)
             if overflow { return nil }
             total = sum
         }
         return total
+    }
+
+    private static func consistent(_ values: [String?]) -> String? {
+        guard let value = values.first ?? nil, !value.isEmpty,
+              values.allSatisfy({ $0 == value }) else { return nil }
+        return value
     }
 }

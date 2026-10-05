@@ -5,6 +5,8 @@ struct QuotaMeterView: View {
     let reset: Date?
     let sampledAt: Date?
     let now: Date
+    var compact = false
+    var handle: AnyView? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var remaining: Int? {
@@ -19,6 +21,7 @@ struct QuotaMeterView: View {
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                 Spacer()
                 Text("7 jours").font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
+                if let handle { handle }
             }
             HStack(spacing: 20) {
                 ZStack {
@@ -33,11 +36,11 @@ struct QuotaMeterView: View {
                     }
                     VStack(spacing: 3) {
                         Text(remaining.map { "\($0) %" } ?? "—")
-                            .font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                            .font(.system(size: compact ? 23 : 27, weight: .semibold, design: .rounded)).monospacedDigit()
                         Text("restants").font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
                     }
                 }
-                .frame(width: 122, height: 122).padding(5)
+                .frame(width: compact ? 84 : 122, height: compact ? 84 : 122).padding(5)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(remaining.map { "Quota officiel Codex : \($0) pour cent restants" } ?? "Quota non actualisé")
                 VStack(alignment: .leading, spacing: 8) {

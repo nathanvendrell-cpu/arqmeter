@@ -4,12 +4,24 @@ Un centre de pilotage macOS pour la consommation observée de Codex, Claude Code
 Gemini CLI et Ollama. Les sources restent séparées : un volume de tokens n’est
 pas un quota, et un ancien journal n’est pas une session en cours.
 
-## Version 1.0.10
+## Version 1.0.12
 
 La barre de menus réunit désormais les logos Claude et Codex, chacun avec son
 pourcentage **restant**, dans un seul cadre. Les limites ne sont jamais additionnées.
 L’infobulle indique la fenêtre, le reset et la provenance lorsqu’ils sont connus.
 Les fenêtres, cadrans et vues détaillées existants ne sont pas recomposés.
+
+L’onglet Quota présente les sources sélectionnées dans leur ordre enregistré.
+Les réglages permettent de cocher plusieurs sources et de déplacer chacune avec
+les flèches. Claude affiche indépendamment la session et la semaine lorsqu’elles
+sont réellement connues ; la barre retient la fenêtre disponible la plus
+contraignante. Gemini et Ollama montrent leurs mesures observées, pas un faux quota.
+
+Les conseils restent des pistes à tester, sans économies promises. Un ratio
+entrée/sortie élevé n’est plus une alerte de gaspillage : il explique aussi le
+cache. Les comparaisons utilisent l’entrée par réponse, avec provider, modèle et
+workspace connus et homogènes, plutôt que des sessions de longueurs différentes.
+Aucune conversation n’est raccourcie, supprimée ou reroutée automatiquement.
 
 - Fenêtre historique de 420 × 650 points, ouverte directement depuis le chiffre
   de la barre de menus ; un nouveau clic la masque ou la rouvre.
@@ -71,7 +83,8 @@ existante et la sauvegarder avant ajout ; le build n’altère pas vos réglages
 Le fragment ne produit aucun affichage et vérifie la capacité du binaire avant
 de l’appeler, pour rester inactif après un rollback vers une ancienne version.
 
-La fenêtre hebdomadaire est prioritaire, avec repli sur cinq heures si nécessaire.
+Les fenêtres session et semaine restent indépendantes. La barre affiche la plus
+contraignante parmi celles qui sont connues et valides, pas systématiquement la semaine.
 Une fenêtre absente, expirée ou reçue depuis plus de trois minutes donne « — % »,
 jamais 100 %. Le délai de réception ne prouve pas une nouvelle interrogation
 du serveur : Claude Code peut réémettre un payload déjà reçu.
@@ -79,17 +92,43 @@ Une session cloud Claude ou l’interface web ne remplit pas cette liaison local
 Le premier événement ordinaire ne suffit que si la version/session Claude Code
 fournit effectivement ces champs ; Arqmeter ne remplace pas une donnée absente.
 
+### Claude : lecteur facultatif de la page officielle (expérimental)
+
+Dans les réglages d’Arqmeter, « Connecter Claude » ouvre la page officielle
+https://claude.ai/settings/usage dans un navigateur WebKit dédié.
+L’utilisateur effectue personnellement la connexion ; une connexion dans Claude
+Desktop ou Chrome ne connecte pas automatiquement ce navigateur.
+Arqmeter ne lit ni cookies, ni identifiants, ni codes de vérification.
+
+Seuls les deux compteurs de quota reconnus sur cette page officielle sont
+conservés. Après une première lecture réussie, la page est rechargée toutes les
+60 secondes, sans appel modèle. Les erreurs entraînent un délai croissant et
+les pages de connexion ne produisent aucune mesure. « Arrêter le suivi » arrête
+le navigateur ; « Utiliser Claude Code » choisit explicitement la liaison locale.
+Un choix web sans mesure fraîche reste « — % », sans repli silencieux vers un
+autre compte Claude Code. L’heure de lecture n’est pas une fraîcheur serveur.
+
+L’authentification et l’extraction d’une vraie page de compte connecté restent à
+valider dans cette préversion. Les tests de DOM construits ne les remplacent pas.
+Un parcours de connexion aboutissant hors de la page d’utilisation n’a pas encore
+été recetté ; aucun quota fictif n’est utilisé pour le masquer.
+
 L’accès aux compteurs de conversations ChatGPT ordinaires n’est pas implémenté.
 La présence de Codex connecté ne donne pas ces compteurs. Le dépôt publie le
 périmètre fonctionnel actuel, pas une extension ChatGPT déjà disponible.
 
 ## Validation de cette préversion
 
-92 tests du moteur et six autotests (présentation, cadran, lecture, archives,
-quota et dessin des deux logos) passent dans l’environnement de développement.
+111 tests du moteur passent sur le candidat des sources et de la connexion.
+Les neuf tests ciblés des conseils passent après leur correction, dont cinq
+nouveaux cas (les autres preuves restent à leur portée). Sept autotests du
+binaire et 18 contrôles de DOM construits passent.
 Le nouveau cadre a été contrôlé par rendu AppKit hors écran, pas par une capture
 de la barre de menus installée ; cette observation native reste à confirmer.
 Le déplacement et le
 maintien du HUD hors focus ont été contrôlés dans une exécution native de QA.
+La sélection multiple et le changement d’ordre par flèches persistent après
+redémarrage dans la recette native isolée. Le premier glisser-déposer des cartes
+n’a pas modifié l’ordre : ce geste n’est pas déclaré validé.
 L’apparence sur tout fond de bureau et la validation visuelle humaine ne sont
 pas déduites de ces tests. Aucune capture privée n’est publiée.

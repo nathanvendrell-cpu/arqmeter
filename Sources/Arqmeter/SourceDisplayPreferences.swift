@@ -1,8 +1,9 @@
 import Combine
 import Foundation
+import ArqmeterCore
 
 enum SourceDisplay {
-    static let order = ["codex", "claude-code", "gemini-cli", "ollama"]
+    static let order = SourceLayout.registryIDs
 
     static func name(_ id: String) -> String {
         switch id {
@@ -27,44 +28,42 @@ enum SourceDisplay {
 /// Presentation preferences only. They never change ingestion or its persisted records.
 final class SourceDisplayPreferences: ObservableObject {
     static let shared = SourceDisplayPreferences()
-    @Published private(set) var visibleIDs: Set<String>
-    @Published private(set) var primaryID: String
+    @Published private(set) var layout: SourceLayout
+    var visibleIDs: Set<String> { layout.visibleIDs }
+    var primaryID: String { layout.primaryID }
+    var orderedIDs: [String] { layout.orderedIDs }
     var onChange: (() -> Void)?
 
     private let defaults: UserDefaults
-    private let visibleKey = "visibleSourceIDs"
-    private let primaryKey = "primarySourceID"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        let saved = defaults.stringArray(forKey: visibleKey)
-        let valid = Set(saved ?? SourceDisplay.order).intersection(SourceDisplay.order)
-        let selected = valid.isEmpty ? Set(SourceDisplay.order) : valid
-        visibleIDs = selected
-        let preferred = defaults.string(forKey: primaryKey) ?? "codex"
-        primaryID = selected.contains(preferred) ? preferred : SourceDisplay.order.first(where: selected.contains) ?? "codex"
+        layout = SourceLayout.load(from: defaults)
     }
 
-    var orderedVisibleIDs: [String] { SourceDisplay.order.filter(visibleIDs.contains) }
+    var orderedVisibleIDs: [String] { layout.orderedVisibleIDs }
 
     func setVisible(_ id: String, _ visible: Bool) {
-        guard SourceDisplay.order.contains(id) else { return }
-        var next = visibleIDs
-        if visible { next.insert(id) } else { next.remove(id) }
-        guard !next.isEmpty, next != visibleIDs else { return }
-        visibleIDs = next
-        defaults.set(SourceDisplay.order.filter(next.contains), forKey: visibleKey)
-        if !next.contains(primaryID) {
-            primaryID = SourceDisplay.order.first(where: next.contains) ?? "codex"
-            defaults.set(primaryID, forKey: primaryKey)
-        }
-        onChange?()
+        update { $0.setVisible(id, visible) }
     }
 
     func setPrimary(_ id: String) {
-        guard visibleIDs.contains(id), primaryID != id else { return }
-        primaryID = id
-        defaults.set(id, forKey: primaryKey)
+        update { $0.setPrimary(id) }
+    }
+
+    func move(_ id: String, relativeTo target: String, after: Bool) {
+        update { $0.move(id, relativeTo: target, after: after) }
+    }
+
+    func moveStep(_ id: String, direction: Int, visibleOnly: Bool = false) {
+        update { $0.moveStep(id, direction: direction, visibleOnly: visibleOnly) }
+    }
+
+    private func update(_ change: (inout SourceLayout) -> Bool) {
+        var next = layout
+        guard change(&next) else { return }
+        layout = next
+        next.save(to: defaults)
         onChange?()
     }
 }

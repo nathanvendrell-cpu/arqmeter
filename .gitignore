@@ -14,9 +14,11 @@
 !Resources/
 !Resources/Info.plist
 !Resources/claude-statusline-fragment.sh
+!Resources/claude-official-usage.js
 !scripts/
 !scripts/build.sh
 !scripts/update-lib.sh
+!scripts/test-claude-official-usage.mjs
 **/.DS_Store
 **/*.sqlite*
 **/*.db

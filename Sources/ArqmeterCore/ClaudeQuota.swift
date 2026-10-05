@@ -13,6 +13,11 @@ public struct ClaudeQuotaReport: Codable, Equatable, Sendable {
     public let fiveHour: Window?
     public let sevenDay: Window?
 
+    public enum Period: String, CaseIterable, Sendable {
+        case fiveHour = "5 heures"
+        case sevenDay = "7 jours"
+    }
+
     public static func decodeStatusLine(_ data: Data, receivedAt: Date) throws -> Self {
         struct Input: Decodable {
             struct Limits: Decodable {
@@ -35,15 +40,20 @@ public struct ClaudeQuotaReport: Codable, Equatable, Sendable {
 
     /// Weekly first; independently absent/expired windows never become 100%.
     public func current(at now: Date) -> (window: Window, period: String)? {
+        if let window = currentWindow(.sevenDay, at: now) { return (window, Period.sevenDay.rawValue) }
+        if let window = currentWindow(.fiveHour, at: now) { return (window, Period.fiveHour.rawValue) }
+        return nil
+    }
+
+    /// Each real window can be shown independently, with exactly the same
+    /// receipt/reset validation as the compact menu counter.
+    public func currentWindow(_ period: Period, at now: Date) -> Window? {
         let age = now.timeIntervalSince(receivedAt)
         guard age >= -5, age < 180 else { return nil }
-        func valid(_ window: Window) -> Bool {
-            window.usedPercentage.isFinite && (0...100).contains(window.usedPercentage) &&
-                window.resetsAt.timeIntervalSince1970.isFinite && window.resetsAt > now
-        }
-        if let sevenDay, valid(sevenDay) { return (sevenDay, "7 jours") }
-        if let fiveHour, valid(fiveHour) { return (fiveHour, "5 heures") }
-        return nil
+        guard let window = period == .fiveHour ? fiveHour : sevenDay,
+              window.usedPercentage.isFinite, (0...100).contains(window.usedPercentage),
+              window.resetsAt.timeIntervalSince1970.isFinite, window.resetsAt > now else { return nil }
+        return window
     }
 
     public static var cacheURL: URL {

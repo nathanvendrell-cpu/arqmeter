@@ -19,6 +19,22 @@ prompts, transcripts, workspace, session et identité du compte sont ignorés.
 Aucune requête modèle ou réseau n’est lancée par cette liaison. Elle ne remplace
 pas votre status line et n’exploite pas les anciens caches d’autres applications.
 
+Un second mode, choisi explicitement par « Connecter Claude », utilise un
+navigateur WebKit dédié à la page officielle d’utilisation de claude.ai.
+L’utilisateur y effectue sa connexion. WebKit gère lui-même sa session persistante ;
+Arqmeter n’accède pas aux API de cookies, credentials ou codes de vérification,
+et n’importe pas la session de Chrome ou de Claude Desktop.
+
+Le lecteur JavaScript est borné aux cartes de quota de cette page, pas aux
+conversations, formulaires, stockage web ou identité du compte. Le fichier local
+claude-official-page-quota.json (0600) contient au plus les deux pourcentages,
+libellés/resets réellement fournis et heures de chargement/lecture. Aucun token
+d’authentification n’y est enregistré. Après une lecture réussie, ce mode recharge
+la page officielle toutes les 60 secondes, avec délai croissant en cas d’erreur ;
+il s’agit de requêtes réseau normales du navigateur, pas de requêtes modèle.
+Le suivi est facultatif et arrêtable sans effacer l’historique utilisateur.
+La page ne fournit pas un timestamp de mesure serveur.
+
 Les logos vectoriels identifient Claude et OpenAI/Codex, sans endorsement.
 Leurs tracés proviennent des favicons officiels ; ils ne deviennent pas la marque
 d’Arqmeter et ne signifient pas une affiliation à Anthropic ou OpenAI.

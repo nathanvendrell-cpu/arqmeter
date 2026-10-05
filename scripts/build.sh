@@ -47,6 +47,7 @@ stage_app="$stage_root/Arqmeter.app"
 /bin/cp "$project_dir/Resources/Info.plist" "$stage_app/Contents/Info.plist"
 /bin/mkdir -p "$stage_app/Contents/Resources"
 /bin/cp "$project_dir/Resources/claude-statusline-fragment.sh" "$stage_app/Contents/Resources/claude-statusline-fragment.sh"
+/bin/cp "$project_dir/Resources/claude-official-usage.js" "$stage_app/Contents/Resources/claude-official-usage.js"
 /usr/bin/codesign --force --deep --sign - "$stage_app"
 arqmeter_validate_bundle "$stage_app"
 

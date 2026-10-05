@@ -1227,22 +1227,34 @@ private struct SourceCoverageSheet: View {
 
 struct SourceSettingsView: View {
     @ObservedObject var preferences: SourceDisplayPreferences
+    var connection: ClaudeOfficialPage = .shared
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             Text("Réglages des sources").font(.system(size: 20, weight: .semibold))
-            Text("Choisissez les sources de la fenêtre principale et du menu bar. Leur collecte et leur historique ne changent pas.")
+            Text("Affichez plusieurs sources et choisissez leur ordre. Vous pouvez aussi glisser leurs cartes dans l’onglet Quota.")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             Divider()
-            ForEach(SourceDisplay.order, id: \.self) { id in
-                Toggle(SourceDisplay.name(id), isOn: Binding(
-                    get: { preferences.visibleIDs.contains(id) },
-                    set: { preferences.setVisible(id, $0) }))
-                    .disabled(preferences.visibleIDs.count == 1 && preferences.visibleIDs.contains(id))
+            ForEach(preferences.orderedIDs, id: \.self) { id in
+                HStack {
+                    Toggle(SourceDisplay.name(id), isOn: Binding(
+                        get: { preferences.visibleIDs.contains(id) },
+                        set: { preferences.setVisible(id, $0) }))
+                        .disabled(preferences.visibleIDs.count == 1 && preferences.visibleIDs.contains(id))
+                    Spacer()
+                    Button { preferences.moveStep(id, direction: -1) } label: { Image(systemName: "arrow.up") }
+                        .disabled(preferences.orderedIDs.first == id)
+                        .accessibilityLabel("Monter \(SourceDisplay.name(id))")
+                    Button { preferences.moveStep(id, direction: 1) } label: { Image(systemName: "arrow.down") }
+                        .disabled(preferences.orderedIDs.last == id)
+                        .accessibilityLabel("Descendre \(SourceDisplay.name(id))")
+                }
+                .buttonStyle(.borderless)
             }
             Divider()
-            Picker("Source principale du menu bar", selection: Binding(
+            ClaudeOfficialConnectionControls(connection: connection)
+            Picker("Source principale des détails", selection: Binding(
                 get: { preferences.primaryID },
                 set: { preferences.setPrimary($0) })) {
                     ForEach(preferences.orderedVisibleIDs, id: \.self) { id in

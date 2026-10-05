@@ -1,5 +1,26 @@
 # Changements
 
+## 1.0.12 — 2026-10-05
+
+- Réglages communs : plusieurs sources sélectionnables, ordre mémorisé, flèches
+  et actions accessibles ; cartes de l’onglet Quota dans cet ordre.
+- Fenêtres Claude session/semaine indépendantes ; la barre affiche la fenêtre
+  connue la plus contraignante, sans addition de quotas ni compteur de contexte.
+- Connexion facultative via la page officielle dans WebKit ; lecture bornée
+  et cache privé, états absents/périmés honnêtes, aucun appel modèle.
+  Parcours authentifié et rafraîchissements réels encore à valider.
+- Conseil ratio entrée/sortie descriptif, avec cache et limite explicites :
+  il ne démontre pas un gaspillage, un coût ou un quota consommé.
+- Comparaison de l’entrée par réponse au lieu des totaux de sessions de longueurs
+  différentes ; modèles/providers/workspaces inconnus ou mixtes non comparés.
+- Pas de réduction, suppression ou changement de modèle automatique.
+- Présentation, interactions du HUD, SQLite, historiques et essais conservés.
+- 111 tests moteur du candidat de connexion ; 9 tests ciblés des conseils après
+  correction (5 nouveaux), 7 autotests et 18 contrôles de DOM construits réussis.
+- Premier glisser-déposer natif négatif conservé ; ordre par flèches et
+  persistance recettés en QA, sans prétendre à une acceptation visuelle installée.
+- Le candidat Token Value reste exclu.
+
 ## 1.0.10 — 2026-10-05
 
 - Un cadre de barre de menus commun : logo Claude + quota restant, logo

@@ -2,6 +2,14 @@ import XCTest
 @testable import ArqmeterCore
 
 final class ClaudeQuotaTests: XCTestCase {
+    func testBothWindowsAreIndependentAndUseSameMenuFreshness() throws {
+        let report = try decode(#"{"rate_limits":{"five_hour":{"used_percentage":100,"resets_at":1791229000},"seven_day":{"used_percentage":26.4,"resets_at":1791230000}}}"#)
+        XCTAssertEqual(report.currentWindow(.fiveHour, at: now)?.remainingPercent, 0)
+        XCTAssertEqual(report.currentWindow(.sevenDay, at: now)?.remainingPercent, 73)
+        XCTAssertNil(report.currentWindow(.fiveHour, at: now.addingTimeInterval(180)))
+        XCTAssertNil(report.currentWindow(.sevenDay, at: now.addingTimeInterval(180)))
+        XCTAssertEqual(report.current(at: now)?.window, report.currentWindow(.sevenDay, at: now))
+    }
     let now = Date(timeIntervalSince1970: 1791228000)
     func decode(_ json: String) throws -> ClaudeQuotaReport {
         try .decodeStatusLine(Data(json.utf8), receivedAt: now)

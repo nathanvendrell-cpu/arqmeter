@@ -1,5 +1,6 @@
 import AppKit
 import CoreServices
+import ApplicationServices
 import Darwin
 import Foundation
 import ArqmeterCore
@@ -377,6 +378,7 @@ final class OfficialUsageMonitor {
         guard !presentationConfigured else { return }
         presentationConfigured = true
         if !nativeQA {
+            ClaudeOfficialPage.shared.startIfEnabled()
             statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             statusItem.button?.title = "— %"
             statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
@@ -480,7 +482,7 @@ final class OfficialUsageMonitor {
         guard let button = statusItem?.button else { return }
         ProviderQuotaMenu.apply(to: button, codexRemaining: dashboard.remainingPercent,
             codexSampledAt: dashboard.officialSampledAt, codexReset: dashboard.resetsAt,
-            claude: ClaudeQuotaReport.read(), now: Date())
+            claude: ClaudeQuotaReport.read(), now: Date(), orderedIDs: sourcePreferences.orderedVisibleIDs)
     }
 
     private func openControlCenter() {
@@ -564,6 +566,7 @@ final class OfficialUsageMonitor {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ClaudeOfficialPage.shared.stop()
         statusTimer?.invalidate()
         statusTimer = nil
         dashboard.stopAllLive()
@@ -572,7 +575,24 @@ final class OfficialUsageMonitor {
     }
 }
 
-if CommandLine.arguments.contains("--menu-quota-self-test") {
+if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa", CommandLine.arguments.count == 1 {
+    let database = (Bundle.main.object(forInfoDictionaryKey: "ARQProviderQAHistoryPath") as? String).map { URL(fileURLWithPath: $0) }
+        ?? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("provider-qa-history.sqlite3")
+    do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.native(database: database) }; exit(EXIT_SUCCESS) }
+    catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--claude-web-self-test") {
+    do { try MainActor.assumeIsolated { try ClaudeOfficialPage.lifecycleSelfTest() }; exit(EXIT_SUCCESS) }
+    catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--claude-accessibility-status") {
+    print("Claude native reader permission probe: AXIsProcessTrusted=\(AXIsProcessTrusted()); no prompt, no permission change, no content read; bundle=\(Bundle.main.bundleIdentifier ?? "unbundled")")
+    exit(EXIT_SUCCESS)
+} else if let index = CommandLine.arguments.firstIndex(of: "--provider-layout-preferences-test"), CommandLine.arguments.count > index + 1 {
+    do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.preferencesRoundtrip(stage: CommandLine.arguments[index + 1]) }; exit(EXIT_SUCCESS) }
+    catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if let index = CommandLine.arguments.firstIndex(of: "--provider-layout-native-qa"), CommandLine.arguments.count > index + 1 {
+    do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.native(database: URL(fileURLWithPath: CommandLine.arguments[index + 1])) }; exit(EXIT_SUCCESS) }
+    catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--menu-quota-self-test") {
     do { try MainActor.assumeIsolated { try ProviderQuotaMenu.selfTest() }; exit(EXIT_SUCCESS) }
     catch { exit(EXIT_FAILURE) }
 } else if let index = CommandLine.arguments.firstIndex(of: "--render-menu-quotas"), CommandLine.arguments.count > index + 1 {

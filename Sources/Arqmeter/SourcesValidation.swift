@@ -3,14 +3,21 @@ import ArqmeterCore
 import SwiftUI
 
 final class SourcesValidationModel: ObservableObject {
+    private let pinnedSnapshot: HistoricalDashboardSnapshot?
     @Published private(set) var usage: UnifiedUsage?
     @Published private(set) var historical: HistoricalDashboardSnapshot?
     var windowDays = 7
     @Published private(set) var loading = false
     private var scanning = false
 
+    init(readOnlySnapshot: HistoricalDashboardSnapshot? = nil) {
+        pinnedSnapshot = readOnlySnapshot
+        historical = readOnlySnapshot
+    }
+
     func refresh(codex: LocalTokenSummary?, quota: Int?, quotaSampledAt: Date?) {
         loadHistorical()
+        if pinnedSnapshot != nil { return }
         guard !scanning else { return }
         scanning = true
         loading = true
@@ -38,6 +45,7 @@ final class SourcesValidationModel: ObservableObject {
     }
 
     func loadHistorical(days: Int? = nil) {
+        if let pinnedSnapshot { historical = pinnedSnapshot; return }
         if let days { windowDays = days }
         HistoricalUsageService.shared.snapshot(days: windowDays) { [weak self] result in self?.historical = result }
     }

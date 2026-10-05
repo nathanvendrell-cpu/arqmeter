@@ -131,8 +131,10 @@ final class DashboardModel: ObservableObject {
 
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
-    @ObservedObject private var sourcePreferences = SourceDisplayPreferences.shared
-    @StateObject private var sourcesModel = SourcesValidationModel()
+    @ObservedObject private var sourcePreferences: SourceDisplayPreferences
+    @StateObject private var sourcesModel: SourcesValidationModel
+    private let providedConnection: ClaudeOfficialPage?
+    @MainActor private var sourceConnection: ClaudeOfficialPage { providedConnection ?? .shared }
     @State private var showingSources = false
     @State private var showingSourceSettings = false
     @State private var now = Date()
@@ -157,8 +159,14 @@ struct DashboardView: View {
     }
 
     init(model: DashboardModel, openDetails: (() -> Void)? = nil,
-         onWindowDrag: ((NSEvent?) -> Void)? = nil) {
+         onWindowDrag: ((NSEvent?) -> Void)? = nil,
+         sourcePreferences: SourceDisplayPreferences = .shared,
+         sourcesModel: SourcesValidationModel = SourcesValidationModel(),
+         sourceConnection: ClaudeOfficialPage? = nil) {
         self.model = model
+        self._sourcePreferences = ObservedObject(wrappedValue: sourcePreferences)
+        self._sourcesModel = StateObject(wrappedValue: sourcesModel)
+        self.providedConnection = sourceConnection
         self.openDetails = openDetails
         self.onWindowDrag = onWindowDrag
     }
@@ -186,9 +194,10 @@ struct DashboardView: View {
                     case .dossiers:
                         ProjectListPanel(local: model.local, now: Date())
                     case .quota:
-                        quotaCard
-                        currentCycleCard
+                        LiveProviderQuotaCards(connection: sourceConnection, dashboard: model, preferences: sourcePreferences,
+                            historical: sourcesModel.historical)
                         DisclosureGroup("Historique et répartition") {
+                            currentCycleCard
                             cycleCard
                             AccountTimelineCard(model: model.accountTimeline,
                                                 days: model.comparison.archiveDays,
@@ -231,9 +240,18 @@ struct DashboardView: View {
                                   quotaSampledAt: model.officialSampledAt)
         }
         .sheet(isPresented: $showingSourceSettings) {
-            SourceSettingsView(preferences: sourcePreferences)
+            SourceSettingsView(preferences: sourcePreferences, connection: sourceConnection)
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
+        .onAppear {
+            if model.selectedTab == .quota { sourcesModel.loadHistorical() }
+        }
+        .onChange(of: model.selectedTab) {
+            if $0 == .quota { sourcesModel.loadHistorical() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .arqmeterHistoryUpdated)) { _ in
+            if model.selectedTab == .quota { sourcesModel.loadHistorical() }
+        }
         .modifier(ArqmeterWindowFocus())
     }
 
