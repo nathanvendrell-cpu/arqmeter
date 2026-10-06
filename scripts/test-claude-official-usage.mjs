@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
 const script = readFileSync(new URL('../Resources/claude-official-usage.js', import.meta.url), 'utf8');
-function fixture({ value = '25', textValue = '25', max = '100', min = '0', reset = 'Resets in 3 hours', weekly = true, host = 'claude.ai', path = '/settings/usage', contextOnly = false } = {}) {
-  const heading = { innerText: 'Your usage' };
+function fixture({ value = '25', textValue = '25', max = '100', min = '0', reset = 'Resets in 3 hours', weekly = true, host = 'claude.ai', path = '/settings/usage', contextOnly = false, title = 'Your usage' } = {}) {
+  const heading = { innerText: title };
   const make = (label, raw, displayed) => {
     const anchor = { innerText: label, children: [] };
     const bar = { getAttribute: key => ({ 'aria-valuenow': raw, 'aria-valuemax': max, 'aria-valuemin': min })[key] ?? null };
@@ -29,4 +29,6 @@ assert.equal(fixture({ min: '1', weekly: false }).recognized, false);
 assert.equal(fixture({ contextOnly: true, weekly: false }).recognized, false);
 assert.equal(fixture({ host: 'other.test' }).recognized, false);
 assert.equal(fixture({ path: '/chat/private' }).recognized, false);
-console.log('Official-page extractor: 18 synthetic checks PASS; empty≠0, exhausted=100, no context/cookie read, wrong page and conflicting values rejected. Not real-account validation.');
+for (const title of ['Plan usage limits', 'Usage', "Limites d'utilisation du forfait"]) assert.equal(fixture({ title }).session.usedPercent, 25);
+for (const title of ['Settings', 'Billing', 'Usages']) assert.equal(fixture({ title }).recognized, false);
+console.log('Official-page extractor: 24 synthetic checks PASS; empty≠0, exhausted=100, no context/cookie read, wrong page and conflicting values rejected. Not real-account validation.');

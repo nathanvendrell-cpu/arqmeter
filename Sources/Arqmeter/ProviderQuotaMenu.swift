@@ -30,6 +30,7 @@ import ArqmeterCore
             claudeTip = "Claude · \(claudeText) restants · \(current.period.rawValue)\(reset) · \(readout.provenance) · observé à \(date.string(from: readout.observedAt))"
         } else {
             claudeTip = desktopSelected ? "Claude · " + ClaudeDesktopQuotaReader.shared.state :
+                webSelected ? "Claude · " + ClaudeOfficialPage.shared.state :
                 "Claude · quota absent ou périmé · choisir la source dans les réglages"
         }
         let codexTip = codex.map { "Codex · \($0) % restants · 7 jours" + (codexReset.map { " · reset \(date.string(from: $0))" } ?? "") } ?? "Codex · quota officiel absent ou périmé"

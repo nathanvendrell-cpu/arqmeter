@@ -1,5 +1,19 @@
 # Changements
 
+## Non publié
+
+- Page officielle Claude (« Connecter Claude ») : suivi autonome toutes les 60 s
+  qui ne se coupe plus tout seul. Une redirection, une session expirée ou un échec
+  réseau ne désactivent plus le suivi ; seul « Arrêter le suivi » l'arrête.
+  Les installations bloquées par l'ancien comportement reprennent au lancement.
+- Après connexion, retour automatique sur Utilisation ; jamais de navigation
+  pendant que l'utilisateur se connecte dans la fenêtre.
+- Page cachée non ralentie par WebKit (macOS 14+), extraction attendue jusqu'à 16 s.
+- Titre de page tolérant (« Plan usage limits », « Usage »…), libellés exacts
+  conservés pour les compteurs. 24 contrôles synthétiques de l'extracteur.
+- Infobulle de la barre : état réel du lecteur de page au lieu de « — % » muet.
+- Non compilé ni recetté sur macOS dans cette session : build et recette locale requis.
+
 ## 1.0.13 — 2026-10-06
 
 - Source facultative Claude Desktop déjà connecté, sans seconde connexion :
