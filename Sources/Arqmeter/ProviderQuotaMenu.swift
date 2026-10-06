@@ -3,19 +3,23 @@ import ArqmeterCore
 
 /// Only the menu button changes. Its existing target/action remains untouched.
 @MainActor enum ProviderQuotaMenu {
+    private static func claudeText(remaining: Int?, webSelected: Bool, desktopSelected: Bool) -> String {
+        remaining.map { "\($0) %" } ?? (webSelected || desktopSelected ? "…" : ClaudeCLIQuotaReader.shared.compactState)
+    }
     static func apply(to button: NSStatusBarButton, codexRemaining: Int?, codexSampledAt: Date?,
                       codexReset: Date?, claude: ClaudeQuotaReport?, now: Date,
                       orderedIDs: [String] = ["claude-code", "codex"],
                       webClaude: ClaudeWebQuotaReport? = ClaudeWebQuotaReport.readActive(),
                       webSelected: Bool = UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey),
                       desktop: ClaudeDesktopQuotaReport? = ClaudeDesktopQuotaReport.readActive(),
-                      desktopSelected: Bool = UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey)) {
+                      desktopSelected: Bool = UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey),
+                      cli: ClaudeCLIQuotaReport? = ClaudeCLIQuotaReport.read()) {
         let codex = ControlReadout.quota(codexRemaining, sampledAt: codexSampledAt, now: now, resetsAt: codexReset)
         let readout = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
-            desktop: desktop, desktopSelected: desktopSelected, at: now)
+            desktop: desktop, desktopSelected: desktopSelected, cli: cli, at: now)
         let claudeCurrent = readout?.preferred
         let claudeValue = claudeCurrent?.window.remainingPercent
-        let claudeText = claudeValue.map { "\($0) %" } ?? "— %"
+        let claudeText = Self.claudeText(remaining: claudeValue, webSelected: webSelected, desktopSelected: desktopSelected)
         let codexText = codex.map { "\($0) %" } ?? "— %"
         button.title = ""
         button.imagePosition = .imageOnly
@@ -30,12 +34,17 @@ import ArqmeterCore
             claudeTip = "Claude · \(claudeText) restants · \(current.period.rawValue)\(reset) · \(readout.provenance) · observé à \(date.string(from: readout.observedAt))"
         } else {
             claudeTip = desktopSelected ? "Claude · " + ClaudeDesktopQuotaReader.shared.state :
-                "Claude · quota absent ou périmé · choisir la source dans les réglages"
+                webSelected ? "Claude · " + ClaudeOfficialPage.shared.state :
+                "Claude · " + ClaudeCLIQuotaReader.shared.state
         }
+        let lastClaude = claudeCurrent == nil ? ClaudePlanQuotaReadout.lastKnownDescription(statusLine: claude,
+            web: webSelected ? (webClaude ?? ClaudeWebQuotaReport.read()) : nil, webSelected: webSelected,
+            desktop: desktopSelected ? (desktop ?? ClaudeDesktopQuotaReport.read()) : nil,
+            desktopSelected: desktopSelected, cli: cli, at: now) : nil
         let codexTip = codex.map { "Codex · \($0) % restants · 7 jours" + (codexReset.map { " · reset \(date.string(from: $0))" } ?? "") } ?? "Codex · quota officiel absent ou périmé"
         let tips = orderedIDs.map { id in
             switch id {
-            case "claude-code": return claudeTip
+            case "claude-code": return claudeTip + (lastClaude.map { " · " + $0 } ?? "")
             case "codex": return codexTip
             default: return SourceDisplay.name(id) + " · activité locale dans ARQMETER · quota non fourni"
             }
@@ -81,6 +90,12 @@ import ArqmeterCore
         guard image(claude: "100 %", codex: "100 %", orderedIDs: SourceDisplay.order).size.width <= 320 else {
             throw NSError(domain: "ProviderQuotaMenu", code: 4)
         }
+        for state in ["…", "!", "?"] {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+            guard (state as NSString).size(withAttributes: [.font: font]).width <= ("100 %" as NSString).size(withAttributes: [.font: font]).width else {
+                throw NSError(domain: "ProviderQuotaMenu", code: 5)
+            }
+        }
     }
 
     /// The same drawing function, with actual values. Not a desktop capture.
@@ -91,9 +106,11 @@ import ArqmeterCore
         let claude = ClaudePlanQuotaReadout.make(statusLine: report, web: ClaudeWebQuotaReport.readActive(),
             webSelected: UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey),
             desktop: ClaudeDesktopQuotaReport.readActive(),
-            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey), at: now)?.preferred?.window.remainingPercent
+            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey), cli: ClaudeCLIQuotaReport.read(), at: now)?.preferred?.window.remainingPercent
         let value = ControlReadout.quota(codex?.remainingPercent, sampledAt: codex?.timestamp, now: now, resetsAt: codex?.resetsAt)
-        let menuImage = image(claude: claude.map { "\($0) %" } ?? "— %", codex: value.map { "\($0) %" } ?? "— %",
+        let menuImage = image(claude: claudeText(remaining: claude,
+            webSelected: UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey),
+            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey)), codex: value.map { "\($0) %" } ?? "— %",
             orderedIDs: SourceDisplayPreferences.shared.orderedVisibleIDs)
         let width = Int(menuImage.size.width) + 16, height = 38
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width * 4, pixelsHigh: height * 4,

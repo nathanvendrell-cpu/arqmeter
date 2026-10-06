@@ -102,6 +102,11 @@ final class HistoricalUsageService {
                     sessions = UsageSessionIndex.sessions(records)
                     let lastByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.lastEvent) })
                     recommendations = SessionOptimizer.analyze(records).sorted { left, right in
+                        // Prioritize measured uncached load, not repeated cached context.
+                        // This ranks opportunities only; no quality, cost or gain inferred.
+                        if left.basis.priority != right.basis.priority {
+                            return left.basis.priority > right.basis.priority
+                        }
                         func severity(_ value: RecommendationSeverity) -> Int {
                             switch value { case .high: return 3; case .moderate: return 2; case .info: return 1 }
                         }

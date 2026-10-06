@@ -94,7 +94,8 @@ public struct ClaudePlanQuotaReadout: Sendable {
         return values.min { $0.window.remainingPercent < $1.window.remainingPercent }
     }
     public static func make(statusLine: ClaudeQuotaReport?, web: ClaudeWebQuotaReport?, webSelected: Bool = false,
-                            desktop: ClaudeDesktopQuotaReport? = nil, desktopSelected: Bool = false, at now: Date) -> Self? {
+                            desktop: ClaudeDesktopQuotaReport? = nil, desktopSelected: Bool = false,
+                            cli: ClaudeCLIQuotaReport? = nil, at now: Date) -> Self? {
         if desktopSelected {
             guard let desktop else { return nil }
             func convert(_ period: ClaudeQuotaReport.Period) -> Window? {
@@ -118,15 +119,51 @@ public struct ClaudePlanQuotaReadout: Sendable {
             }
             return nil
         }
+        var codeReadouts: [Self] = []
+        if let cli {
+            func convert(_ period: ClaudeQuotaReport.Period) -> Window? {
+                cli.currentWindow(period, at: now).map { Window(remainingPercent: $0.remainingPercent, resetLabel: $0.resetLabel, resetsAt: nil) }
+            }
+            let session = convert(.fiveHour), weekly = convert(.sevenDay)
+            if session != nil || weekly != nil {
+                codeReadouts.append(Self(observedAt: cli.observedAt, provenance: "Claude Code · /usage officiel · fraîcheur serveur non fournie", session: session, weekly: weekly))
+            }
+        }
         if let statusLine {
             func convert(_ period: ClaudeQuotaReport.Period) -> Window? {
                 statusLine.currentWindow(period, at: now).map { Window(remainingPercent: $0.remainingPercent, resetLabel: nil, resetsAt: $0.resetsAt) }
             }
             let session = convert(.fiveHour), weekly = convert(.sevenDay)
             if session != nil || weekly != nil {
-                return Self(observedAt: statusLine.receivedAt, provenance: "Reçu via Claude Code · fraîcheur serveur non fournie", session: session, weekly: weekly)
+                codeReadouts.append(Self(observedAt: statusLine.receivedAt, provenance: "Reçu via Claude Code · fraîcheur serveur non fournie", session: session, weekly: weekly))
             }
         }
-        return nil
+        return codeReadouts.max { $0.observedAt < $1.observedAt }
+    }
+
+    /// Explicit history, never a current readout and never merged across selected account surfaces.
+    public static func lastKnownDescription(statusLine: ClaudeQuotaReport?, web: ClaudeWebQuotaReport?,
+                                            webSelected: Bool, desktop: ClaudeDesktopQuotaReport?,
+                                            desktopSelected: Bool, cli: ClaudeCLIQuotaReport?, at now: Date) -> String? {
+        let observed: Date?
+        let amounts: [Double]
+        if desktopSelected {
+            observed = desktop?.observedAt
+            amounts = [desktop?.session?.usedPercent, desktop?.weekly?.usedPercent].compactMap { $0 }
+        } else if webSelected {
+            observed = web?.observedAt
+            amounts = [web?.session?.usedPercent, web?.weekly?.usedPercent].compactMap { $0 }
+        } else if let cli, cli.observedAt >= (statusLine?.receivedAt ?? .distantPast) {
+            observed = cli.observedAt
+            amounts = [cli.session?.usedPercent, cli.weekly?.usedPercent].compactMap { $0 }
+        } else {
+            observed = statusLine?.receivedAt
+            amounts = [statusLine?.fiveHour?.usedPercentage, statusLine?.sevenDay?.usedPercentage].compactMap { $0 }
+        }
+        guard let observed, !amounts.isEmpty, amounts.allSatisfy({ $0.isFinite && (0...100).contains($0) }),
+              now >= observed else { return nil }
+        let age = Int(now.timeIntervalSince(observed) / 60)
+        let elapsed = age < 1 ? "moins d’une minute" : age < 60 ? "\(age) min" : "\(age / 60) h"
+        return "Dernier relevé : \(Int((100 - (amounts.max() ?? 0)).rounded(.down))) % restants, il y a \(elapsed) · non actuel"
     }
 }

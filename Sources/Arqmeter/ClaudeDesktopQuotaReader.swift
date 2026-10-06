@@ -176,6 +176,7 @@ enum ClaudeDesktopAXReader {
         refresh()
     }
     func select() {
+        ClaudeCLIQuotaReader.shared.stop()
         ClaudeOfficialPage.shared.suspend()
         UserDefaults.standard.set(false, forKey: ClaudeWebQuotaReport.selectedKey)
         UserDefaults.standard.set(true, forKey: ClaudeDesktopQuotaReport.selectedKey)

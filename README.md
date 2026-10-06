@@ -4,7 +4,23 @@ Un centre de pilotage macOS pour la consommation observée de Codex, Claude Code
 Gemini CLI et Ollama. Les sources restent séparées : un volume de tokens n’est
 pas un quota, et un ancien journal n’est pas une session en cours.
 
-## Version 1.0.13
+## Version 1.0.14 — préversion
+
+Les cartes **Conseils** distinguent désormais le contexte total cumulé, le cache
+lu et l’entrée hors cache, avec leur couverture. Les estimations ne sont pas
+ajoutées aux mesures ; une somme partielle n’est pas présentée comme un total
+complet. Pour Claude Code, l’entrée hors cache inclut la création de cache.
+
+Une hausse du total dominée par le cache n’est ni un gaspillage démontré ni une
+raison de réinitialiser la conversation. La priorité porte sur l’entrée hors
+cache lorsque les mesures sont complètes et le provider/modèle homogène, même
+si le total reste stable. Les observations du total et leurs preuves restent
+accessibles. Aucun coût, quota, gain ou maintien de qualité n’est déduit de ces
+heuristiques : les essais manuels et leur acceptation humaine sont conservés.
+
+Cette version reprend aussi les correctifs du lecteur officiel Claude Code de
+la baseline installée précédente, et pas seulement les cartes Conseils. Les
+fenêtres, le déplacement, les cadrans et le verre clair restent inchangés.
 
 Un lecteur facultatif peut maintenant observer les compteurs du panneau
 **Utilisation de Claude Desktop déjà connecté**, sans seconde connexion.
@@ -29,7 +45,7 @@ contraignante. Gemini et Ollama montrent leurs mesures observées, pas un faux q
 
 Les conseils restent des pistes à tester, sans économies promises. Un ratio
 entrée/sortie élevé n’est plus une alerte de gaspillage : il explique aussi le
-cache. Les comparaisons utilisent l’entrée par réponse, avec provider, modèle et
+cache. Les comparaisons utilisent l’entrée par événement, avec provider, modèle et
 workspace connus et homogènes, plutôt que des sessions de longueurs différentes.
 Aucune conversation n’est raccourcie, supprimée ou reroutée automatiquement.
 
@@ -133,6 +149,23 @@ Une session cloud Claude ou l’interface web ne remplit pas cette liaison local
 Le premier événement ordinaire ne suffit que si la version/session Claude Code
 fournit effectivement ces champs ; Arqmeter ne remplace pas une donnée absente.
 
+### Claude Code : lecteur officiel interactif facultatif
+
+Le lecteur utilise le panneau `/usage` de Claude Code installé et sa connexion
+CLI existante, dans un terminal dédié. Il ne lance aucune réponse modèle, ne
+lit pas de secrets et n’automatise pas l’authentification. Un écran inconnu de
+connexion/configuration interrompt la lecture. La confirmation de confiance est
+limitée au répertoire vide privé du lecteur et à son écran connu ; ce n’est pas
+une suppression générale des protections de Claude Code.
+
+Le panneau final doit être reconnu : les pourcentages de contexte, de coût ou
+de tokens ne deviennent pas des quotas d’abonnement. Une limitation serveur
+déclenche un délai progressif mémorisé après relance/réveil. Une ancienne mesure
+ne devient pas fraîche parce qu’elle est relue. En cas de refus ou de donnée
+absente, l’application garde un état neutre explicite, sans fabriquer de quota.
+Choisir Desktop ou la page officielle ne provoque pas de repli silencieux vers
+un autre compte CLI. Voir [le contrat du connecteur](CONNECTOR_CONTRACT.md).
+
 ### Claude : lecteur facultatif de la page officielle (expérimental)
 
 Dans les réglages d’Arqmeter, « Connecter Claude » ouvre la page officielle
@@ -159,6 +192,17 @@ La présence de Codex connecté ne donne pas ces compteurs. Le dépôt publie le
 périmètre fonctionnel actuel, pas une extension ChatGPT déjà disponible.
 
 ## Validation de cette préversion
+
+Le candidat 1.0.14 passe 16 tests ciblés de l’Optimizer et 156 tests de régression,
+sans suppression des tests existants. Les sept nouveaux cas couvrent notamment
+cache dominant, hausse hors cache avec total stable, couverture partielle ou
+invalide, modèles mélangés, sortie nulle et création de cache Claude.
+Les quatre rendus des cartes utilisent le vrai composant, mais des données
+synthétiques explicitement marquées, sans base utilisateur ni réseau. Ils ne
+prouvent pas une acquisition de compte, une interaction native ou une acceptation
+visuelle. La compilation et la signature ad hoc sont vérifiées séparément.
+
+État des validations précédentes, conservées avec leurs limites :
 
 Sur 1.0.13, 35 tests ciblés passent (Claude natif, liaisons Claude existantes et
 conseils), ainsi que les sept autotests du binaire. Les neuf nouveaux tests natifs

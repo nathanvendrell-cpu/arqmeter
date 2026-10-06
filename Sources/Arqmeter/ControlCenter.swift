@@ -961,41 +961,11 @@ struct ControlCenterView: View {
 
     private func recommendationCard(_ item: SessionRecommendation) -> some View {
         let resolvedModel = product.allSessions.first { $0.id == "\(item.harnessID):\(item.sessionID)" }?.modelID
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text(item.problem).font(.system(size: 14, weight: .semibold))
-                Spacer()
-                Text("\(severityLabel(item.severity)) · confiance \(confidenceLabel(item.confidence))")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Text("Action proposée · \(item.recommendation)").font(.system(size: 14))
-            DisclosureGroup("Pourquoi ce conseil · preuves et limites") {
-            VStack(alignment: .leading, spacing: 12) {
-            Text("Observation · \(item.observedData)").font(.system(size: 13))
-            Text("Impact estimé, non démontré · \(item.estimatedImpact)").font(.system(size: 13)).foregroundStyle(.secondary)
-            Text("Limite · \(item.limitations)").font(.system(size: 13)).foregroundStyle(.secondary)
-            Text("Preuves · \(item.evidence.count) événements · \(label(item.harnessID)) · \(resolvedModel ?? item.modelID ?? "modèle inconnu")")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-            DisclosureGroup("Identifiants de preuve") {
-                ForEach(Array(item.evidence.prefix(30)), id: \.self) { eventID in
-                    Text(eventID).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
-                }
-                if item.evidence.count > 30 { Text("\(item.evidence.count - 30) autres événements dans la session.").font(.system(size: 10)).foregroundStyle(.secondary) }
-            }
-            }
-            .padding(.top, 12)
-            }
-            HStack(spacing: 15) {
-                Button("Ouvrir la session") { product.openSession("\(item.harnessID):\(item.sessionID)") }
-                Button("Ignorer") { product.ignore(item.id) }
-                // The manual-trial action is wired to the persistent domain store below.
-                if let session = product.allSessions.first(where: { $0.id == "\(item.harnessID):\(item.sessionID)" }) {
-                    Button("Préparer un essai") { prepareTrial(for: session, recommendation: item) }
-                }
-            }
-            .buttonStyle(.link)
-        }
-        .panel()
+        let session = product.allSessions.first { $0.id == "\(item.harnessID):\(item.sessionID)" }
+        return AdviceCardView(item: item, resolvedModel: resolvedModel,
+            onOpenSession: { product.openSession("\(item.harnessID):\(item.sessionID)") },
+            onIgnore: { product.ignore(item.id) },
+            onPrepareTrial: session.map { session in { prepareTrial(for: session, recommendation: item) } })
     }
 
     private func prepareTrial(for session: UsageSession, recommendation: SessionRecommendation) {

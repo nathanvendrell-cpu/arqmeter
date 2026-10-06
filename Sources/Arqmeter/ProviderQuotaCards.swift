@@ -95,6 +95,7 @@ struct ProviderQuotaCards: View {
     let now: Date
     var desktop: ClaudeDesktopQuotaReport? = nil
     var desktopSelected: Bool = false
+    var cli: ClaudeCLIQuotaReport? = nil
     @State private var dragging: String?
 
     var body: some View {
@@ -129,7 +130,7 @@ struct ProviderQuotaCards: View {
             HStack(alignment: .top, spacing: 14) {
                 ForEach(ClaudeQuotaReport.Period.allCases, id: \.rawValue) { period in
                     let window = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
-                        desktop: desktop, desktopSelected: desktopSelected, at: now)?.window(period)
+                        desktop: desktop, desktopSelected: desktopSelected, cli: cli, at: now)?.window(period)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(period.rawValue).font(.system(size: 12, weight: .medium))
                             .foregroundStyle(InstrumentTheme.secondary)
@@ -148,15 +149,20 @@ struct ProviderQuotaCards: View {
                 }
             }
             if let readout = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
-                desktop: desktop, desktopSelected: desktopSelected, at: now) {
+                desktop: desktop, desktopSelected: desktopSelected, cli: cli, at: now) {
                 Text("\(readout.provenance) · \(readout.observedAt.formatted(.dateTime.hour().minute()))")
                     .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
             } else {
-                Text(claude?.fiveHour != nil || claude?.sevenDay != nil
-                    ? "Relevé périmé · en attente de Claude Code"
-                    : "Connecter Claude dans les réglages")
+                Text(desktopSelected ? ClaudeDesktopQuotaReader.shared.state : webSelected ? ClaudeOfficialPage.shared.state : ClaudeCLIQuotaReader.shared.state)
                     .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let last = ClaudePlanQuotaReadout.lastKnownDescription(statusLine: claude,
+                    web: webSelected ? (webClaude ?? ClaudeWebQuotaReport.read()) : nil, webSelected: webSelected,
+                    desktop: desktopSelected ? (desktop ?? ClaudeDesktopQuotaReport.read()) : nil,
+                    desktopSelected: desktopSelected, cli: cli, at: now) {
+                    Text(last).font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(14).glassCard()
@@ -212,7 +218,7 @@ struct LiveProviderQuotaCards: View {
         ProviderQuotaCards(dashboard: dashboard, preferences: preferences,
             historical: historical, claude: report, webClaude: webReport, webSelected: connection.selected, now: now,
             desktop: ClaudeDesktopQuotaReport.readActive(),
-            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey))
+            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey), cli: ClaudeCLIQuotaReport.read())
             .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) {
                 now = $0; report = ClaudeQuotaReport.read(); webReport = connection.report
             }

@@ -60,4 +60,18 @@ final class ClaudeQuotaTests: XCTestCase {
         XCTAssertThrowsError(try ClaudeQuotaReport.decodeStatusLine(Data(repeating: 32, count: 256 * 1024 + 1), receivedAt: now))
         XCTAssertThrowsError(try decode("not json"))
     }
+    func testReplayAndAbsentFieldsCannotRefreshOrEraseOfficialReceipt() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("receipt.json")
+        let payload = Data(#"{"session_id":"SYNTHETIC_PRIVATE_ID","cost":{"total_api_duration_ms":1200},"rate_limits":{"seven_day":{"used_percentage":20,"resets_at":1791230000}}}"#.utf8)
+        XCTAssertTrue(try ClaudeQuotaReport.captureStatusLine(payload, receivedAt: now, url: url))
+        XCTAssertFalse(try ClaudeQuotaReport.captureStatusLine(payload, receivedAt: now.addingTimeInterval(300), url: url))
+        XCTAssertFalse(try ClaudeQuotaReport.captureStatusLine(Data("{}".utf8), receivedAt: now.addingTimeInterval(301), url: url))
+        XCTAssertEqual(ClaudeQuotaReport.read(url: url)?.receivedAt, now)
+        XCTAssertFalse(try String(contentsOf: url).contains("SYNTHETIC_PRIVATE_ID"))
+        let nextResponse = Data(String(decoding: payload, as: UTF8.self).replacingOccurrences(of: "1200", with: "1500").utf8)
+        XCTAssertTrue(try ClaudeQuotaReport.captureStatusLine(nextResponse, receivedAt: now.addingTimeInterval(302), url: url))
+        XCTAssertEqual(ClaudeQuotaReport.read(url: url)?.receivedAt, now.addingTimeInterval(302))
+    }
 }

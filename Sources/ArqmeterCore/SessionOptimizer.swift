@@ -17,6 +17,102 @@ public enum ImpactClassification: String, Sendable {
     case measuredSaving
 }
 
+/// Priority describes the evidence available, never a bill, quota, waste or gain.
+public enum RecommendationBasis: String, Sendable {
+    case uncachedInput, otherMeasured, totalInput, cacheRead, measurementLimited
+
+    public var priority: Int {
+        switch self {
+        case .uncachedInput: return 2
+        case .otherMeasured: return 1
+        case .totalInput, .cacheRead, .measurementLimited: return 0
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .uncachedInput: return "Entrée hors cache à examiner"
+        case .otherMeasured: return "Observation mesurée"
+        case .totalInput: return "Observation du total"
+        case .cacheRead: return "Contexte réutilisé en cache"
+        case .measurementLimited: return "Mesures ou comparaison limitées"
+        }
+    }
+}
+
+/// Sums only valid measured values. Missing/estimated/invalid values are explicit;
+/// a partial sum never qualifies a rule on the whole session.
+public struct AdviceTokenEvidence: Sendable, Equatable {
+    public let eventCount: Int
+    public let totalInput: Int64?
+    public let cacheRead: Int64?
+    public let uncachedInput: Int64?
+    public let inputMeasuredEvents: Int
+    public let cacheMeasuredEvents: Int
+    public let pairedMeasuredEvents: Int
+    public let inputEstimatedEvents: Int
+    public let cacheEstimatedEvents: Int
+    public let invalidInputEvents: Int
+    public let invalidCacheEvents: Int
+    public let comparableModelProvider: Bool
+    public let uncachedIncludesCacheCreation: Bool
+
+    public var completeInput: Bool {
+        eventCount > 0 && inputMeasuredEvents == eventCount && totalInput != nil
+    }
+    public var completeUncached: Bool {
+        completeInput && pairedMeasuredEvents == eventCount && uncachedInput != nil && cacheRead != nil
+    }
+    public var uncachedLabel: String {
+        uncachedIncludesCacheCreation ? "Hors cache · création incluse" : "Entrée hors cache"
+    }
+
+    public init(records: [UnifiedUsageRecord]) {
+        eventCount = records.count
+        var inputs: [Int64] = [], caches: [Int64] = [], net: [Int64] = []
+        var inputEstimates = 0, cacheEstimates = 0, badInput = 0, badCache = 0
+        for row in records {
+            var input: Int64?, cache: Int64?
+            switch row.inputTokens {
+            case .measured(let value):
+                if value >= 0 { input = value; inputs.append(value) } else { badInput += 1 }
+            case .estimated: inputEstimates += 1
+            case .unavailable: break
+            }
+            switch row.cachedInputTokens {
+            case .measured(let value):
+                if value < 0 || (input != nil && value > input!) { badCache += 1 }
+                else { cache = value; caches.append(value) }
+            case .estimated: cacheEstimates += 1
+            case .unavailable: break
+            }
+            if let input, let cache { net.append(input - cache) }
+        }
+        inputMeasuredEvents = inputs.count; cacheMeasuredEvents = caches.count
+        pairedMeasuredEvents = net.count
+        totalInput = Self.sum(inputs); cacheRead = Self.sum(caches); uncachedInput = Self.sum(net)
+        inputEstimatedEvents = inputEstimates; cacheEstimatedEvents = cacheEstimates
+        invalidInputEvents = badInput; invalidCacheEvents = badCache
+        let providers = records.compactMap(\.providerID), models = records.compactMap(\.modelID)
+        comparableModelProvider = !records.isEmpty &&
+            providers.count == records.count && models.count == records.count &&
+            providers.allSatisfy { !$0.isEmpty && $0 == providers.first } &&
+            models.allSatisfy { !$0.isEmpty && $0 == models.first }
+        uncachedIncludesCacheCreation = records.contains { $0.sourceKind == .claudeCodeSessionLog }
+    }
+
+    private static func sum(_ values: [Int64]) -> Int64? {
+        guard !values.isEmpty else { return nil }
+        var total: Int64 = 0
+        for value in values {
+            let (next, overflow) = total.addingReportingOverflow(value)
+            guard !overflow else { return nil }
+            total = next
+        }
+        return total
+    }
+}
+
 public struct SessionRecommendation: Identifiable, Sendable {
     public let id: String
     public let type: RecommendationType
@@ -33,6 +129,8 @@ public struct SessionRecommendation: Identifiable, Sendable {
     public let impactClassification: ImpactClassification
     public let evidence: [String]
     public let limitations: String
+    public let basis: RecommendationBasis
+    public let tokenEvidence: AdviceTokenEvidence
 }
 
 /// Heuristics on one session only. No prompt text, task complexity, quality, or
@@ -65,10 +163,11 @@ public enum SessionOptimizer {
                 consistent(session.map(\.modelID)) != nil
             let evidence = session.map(\.eventID)
             let source = first.provenance
+            let tokenEvidence = AdviceTokenEvidence(records: session)
 
             func add(_ type: RecommendationType, severity: RecommendationSeverity,
                      confidence: RecommendationConfidence, observed: String, problem: String,
-                     action: String, limitation: String) {
+                     action: String, limitation: String, basis: RecommendationBasis = .otherMeasured) {
                 result.append(SessionRecommendation(id: "\(key):\(type.rawValue)", type: type,
                     severity: severity, confidence: confidence, harnessID: first.harnessID,
                     sessionID: first.sessionID, modelID: consistent(session.map(\.modelID)),
@@ -76,28 +175,63 @@ public enum SessionOptimizer {
                     recommendation: action,
                     estimatedImpact: "Opportunité non quantifiée ; aucun gain avant/après mesuré.",
                     impactClassification: .theoreticalOpportunity,
-                    evidence: evidence, limitations: "\(limitation) Source : \(source)"))
+                    evidence: evidence, limitations: "\(limitation) Source : \(source)",
+                    basis: basis, tokenEvidence: tokenEvidence))
             }
 
             if fullTokens, let inputTotal, let outputTotal, session.count >= 3,
                inputTotal >= 100_000, outputTotal > 0, Double(inputTotal) >= Double(outputTotal) * 15 {
                 let cacheObservation = cachedTotal.map { " Dont \($0) en cache, \(inputTotal - $0) hors cache." } ?? " Cache non mesuré sur toute la session."
+                let net = tokenEvidence.completeUncached ? tokenEvidence.uncachedInput : nil
+                let netRatioHigh = net.map { Double($0) >= Double(outputTotal) * 15 } ?? false
+                let actionableNet = homogeneousContext && netRatioHigh && (net ?? 0) >= 100_000
+                let basis: RecommendationBasis = actionableNet ? .uncachedInput :
+                    (!tokenEvidence.completeUncached || !homogeneousContext) ? .measurementLimited :
+                    !netRatioHigh ? .cacheRead : .totalInput
+                let netObservation = net.map {
+                    " Ratio hors cache/sortie : \(String(format: "%.1f", Double($0) / Double(outputTotal))):1."
+                } ?? " Ratio hors cache non établi : cache incomplet ou invalide."
                 add(.highInputToOutput, severity: .info, confidence: .low,
-                    observed: "\(inputTotal) tokens d'entrée, \(outputTotal) de sortie sur \(session.count) réponses (ratio ≥ 15:1).\(cacheObservation)",
-                    problem: "Entrée élevée par rapport à la sortie : constat, pas gaspillage démontré.",
-                    action: "Ne pas réduire le contexte sur ce seul ratio. Si une redondance est confirmée, tester un contexte plus court sur un travail équivalent et vérifier qualité et tokens hors cache avant/après.",
-                    limitation: "L'entrée peut inclure du cache et du travail utile aux outils. La sortie ne mesure ni la difficulté ni la qualité ; ces tokens ne donnent pas le coût ni le quota consommé.")
+                    observed: "\(inputTotal) tokens d'entrée, \(outputTotal) de sortie sur \(session.count) événements (ratio total ≥ 15:1).\(cacheObservation)\(netObservation)",
+                    problem: actionableNet ? "Entrée hors cache élevée par rapport à la sortie, à examiner." :
+                        basis == .cacheRead ? "Ratio total élevé, avec contexte réutilisé en cache." :
+                        "Ratio total élevé : observation, pas surcharge démontrée.",
+                    action: actionableNet ?
+                        "Vérifier une redondance réelle avant de tester un contexte plus court. Comparer qualité et entrée hors cache sur un travail équivalent." :
+                        "Conserver le contexte utile et le cache. Ce ratio seul ne justifie ni reset ni compactage ; vérifier qualité et mesures comparables avant tout essai.",
+                    limitation: "L'entrée peut inclure du cache et du travail utile aux outils. Les événements ne sont pas nécessairement des réponses finales. La sortie ne mesure ni difficulté ni qualité ; ces tokens ne donnent ni coût ni quota consommé. Des métadonnées homogènes ne prouvent pas des tâches équivalentes.",
+                    basis: basis)
             }
 
             if inputs.count == session.count, inputs.allSatisfy({ $0 >= 0 }), session.count >= 6, homogeneousContext {
                 let firstAverage = inputs.prefix(3).reduce(0.0) { $0 + Double($1) } / 3
                 let lastAverage = inputs.suffix(3).reduce(0.0) { $0 + Double($1) } / 3
-                if firstAverage > 0, lastAverage >= 20_000, lastAverage >= firstAverage * 2 {
-                    add(.contextGrowth, severity: .moderate, confidence: .medium,
-                        observed: "Entrée moyenne des 3 premières réponses : \(Int(firstAverage)) ; des 3 dernières : \(Int(lastAverage)) tokens (≥ 2×).",
-                        problem: "Le contexte par réponse croît rapidement dans cette session.",
-                        action: "Repérer d'abord une répétition réelle. Tester uniquement les éléments confirmés redondants sur un travail équivalent, puis vérifier qualité et tokens hors cache avant/après.",
-                        limitation: "Une croissance peut être justifiée par la tâche ; elle ne prouve pas un gaspillage. Aucun contenu n'est inspecté, aucune conversation n'est compactée automatiquement.")
+                let totalGrows = firstAverage > 0 && lastAverage >= 20_000 && lastAverage >= firstAverage * 2
+                let net = tokenEvidence.completeUncached ? zip(inputs, cache).map { $0 - $1 } : nil
+                let firstNet = net.map { $0.prefix(3).reduce(0.0) { $0 + Double($1) } / 3 }
+                let lastNet = net.map { $0.suffix(3).reduce(0.0) { $0 + Double($1) } / 3 }
+                let netGrows = firstNet != nil && firstNet! > 0 && lastNet! >= 20_000 && lastNet! >= firstNet! * 2
+                if totalGrows || netGrows {
+                    let cacheExplainsRise = totalGrows && firstNet != nil && lastNet! <= firstNet!
+                    let basis: RecommendationBasis = netGrows ? .uncachedInput :
+                        firstNet == nil ? .measurementLimited : cacheExplainsRise ? .cacheRead : .totalInput
+                    let netObservation: String
+                    if let firstNet, let lastNet {
+                        netObservation = " Hors cache : \(Int(firstNet)) → \(Int(lastNet)) tokens en moyenne." +
+                            (lastNet < firstNet ? " L'entrée hors cache baisse malgré la hausse du total." :
+                                lastNet == firstNet ? " L'entrée hors cache reste stable." : "")
+                    } else { netObservation = " Hors cache non établi : cache incomplet ou invalide." }
+                    add(.contextGrowth, severity: netGrows ? .moderate : .info,
+                        confidence: netGrows ? .medium : .low,
+                        observed: "Entrée totale moyenne des 3 premiers événements : \(Int(firstAverage)) ; des 3 derniers : \(Int(lastAverage)) tokens.\(netObservation)",
+                        problem: netGrows ? "L'entrée hors cache par événement augmente nettement." :
+                            cacheExplainsRise ? "Contexte total en hausse, entrée hors cache stable ou en baisse." :
+                            "Contexte total en hausse ; charge hors cache à distinguer.",
+                        action: netGrows ?
+                            "Repérer une répétition réelle, puis tester uniquement les éléments confirmés redondants sur un travail équivalent. Vérifier qualité et entrée hors cache avant/après." :
+                            "Ne pas réinitialiser ou compacter sur cette hausse seule. Conserver le contexte utile et le cache ; vérifier les mesures manquantes et la qualité avant tout essai.",
+                        limitation: "La croissance peut être justifiée par la tâche ; ni gaspillage ni surcharge inutile n'est démontré. Même provider/modèle ne prouve pas même travail. Aucun contenu n'est inspecté, aucune conversation n'est compactée automatiquement.",
+                        basis: basis)
                 }
             }
 

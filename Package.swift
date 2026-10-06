@@ -10,15 +10,16 @@ let package = Package(
         .executable(name: "Arqmeter", targets: ["Arqmeter"]),
     ],
     targets: [
+        .target(name: "ArqmeterPTY"),
         .target(name: "ArqmeterCore", linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(
             name: "Arqmeter",
-            dependencies: ["ArqmeterCore"],
+            dependencies: ["ArqmeterCore", "ArqmeterPTY"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("CoreServices"),
             ]
         ),
-        .testTarget(name: "ArqmeterCoreTests", dependencies: ["ArqmeterCore"]),
+        .testTarget(name: "ArqmeterCoreTests", dependencies: ["ArqmeterCore", "ArqmeterPTY"]),
     ]
 )

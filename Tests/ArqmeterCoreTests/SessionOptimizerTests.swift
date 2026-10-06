@@ -111,4 +111,111 @@ final class SessionOptimizerTests: XCTestCase {
             .contains { $0.type == .lowCacheReuse })
         XCTAssertTrue(SessionOptimizer.analyze((0..<5).map { record($0, input: -1, output: -1) }).isEmpty)
     }
+
+    func testCachedGrowthWithFallingUncachedInputIsInformationalAndKeepsProof() {
+        let rows = (0..<6).map {
+            record($0, input: $0 < 3 ? 10_000 : 30_000,
+                cache: .measured($0 < 3 ? 5_000 : 29_000))
+        }
+        let growth = SessionOptimizer.analyze(rows).first { $0.type == .contextGrowth }
+        XCTAssertEqual(growth?.basis, .cacheRead)
+        XCTAssertEqual(growth?.severity, .info)
+        XCTAssertTrue(growth?.observedData.contains("baisse malgré la hausse du total") == true)
+        XCTAssertEqual(growth?.evidence.count, 6)
+        XCTAssertEqual(growth?.tokenEvidence.totalInput, 120_000)
+        XCTAssertEqual(growth?.tokenEvidence.cacheRead, 102_000)
+        XCTAssertEqual(growth?.tokenEvidence.uncachedInput, 18_000)
+        XCTAssertTrue(growth?.recommendation.contains("Ne pas réinitialiser") == true)
+    }
+
+    func testRealUncachedGrowthDetectedEvenWithStableTotalInput() {
+        let rows = (0..<6).map { record($0, input: 50_000,
+            cache: .measured($0 < 3 ? 49_000 : 20_000)) }
+        let growth = SessionOptimizer.analyze(rows).first { $0.type == .contextGrowth }
+        XCTAssertEqual(growth?.basis, .uncachedInput)
+        XCTAssertEqual(growth?.severity, .moderate)
+        XCTAssertTrue(growth?.observedData.contains("1000 → 30000") == true)
+        XCTAssertEqual(growth?.tokenEvidence.uncachedInput, 93_000)
+        XCTAssertGreaterThan(growth!.basis.priority, RecommendationBasis.cacheRead.priority)
+    }
+
+    func testCachedRatioDoesNotBecomeAnUncachedLoadAdvice() {
+        let ratio = SessionOptimizer.analyze((0..<5).map {
+            record($0, cache: .measured(49_000))
+        }).first { $0.type == .highInputToOutput }
+        XCTAssertEqual(ratio?.basis, .cacheRead)
+        XCTAssertEqual(ratio?.tokenEvidence.uncachedInput, 5_000)
+        XCTAssertEqual(ratio?.severity, .info)
+        XCTAssertTrue(ratio?.recommendation.contains("ni reset ni compactage") == true)
+        let real = SessionOptimizer.analyze((0..<5).map {
+            record($0, cache: .measured(0))
+        }).first { $0.type == .highInputToOutput }
+        XCTAssertEqual(real?.basis, .uncachedInput)
+        XCTAssertEqual(real?.impactClassification, .theoreticalOpportunity)
+    }
+
+    func testMissingPartialEstimatedOrInvalidCacheNeverPromotesGrowth() {
+        for scenario in ["absent", "partial", "estimated", "negative", "aboveInput"] {
+            let rows = (0..<6).map { i -> UnifiedUsageRecord in
+                let input: Int64 = i < 3 ? 10_000 : 30_000
+                let cache: UsageMeasurement<Int64>
+                switch scenario {
+                case "absent": cache = .unavailable
+                case "partial": cache = i == 0 ? .unavailable : .measured(100)
+                case "estimated": cache = i == 0 ? .estimated(100) : .measured(100)
+                case "negative": cache = i == 0 ? .measured(-1) : .measured(100)
+                default: cache = i == 0 ? .measured(input + 1) : .measured(100)
+                }
+                return record(i, input: input, cache: cache)
+            }
+            let item = SessionOptimizer.analyze(rows).first { $0.type == .contextGrowth }
+            XCTAssertEqual(item?.basis, .measurementLimited, scenario)
+            XCTAssertEqual(item?.severity, .info, scenario)
+            XCTAssertFalse(item!.tokenEvidence.completeUncached, scenario)
+            XCTAssertTrue(item?.observedData.contains("incomplet ou invalide") == true, scenario)
+            if scenario == "estimated" { XCTAssertEqual(item?.tokenEvidence.cacheEstimatedEvents, 1) }
+            if scenario == "negative" || scenario == "aboveInput" {
+                XCTAssertEqual(item?.tokenEvidence.invalidCacheEvents, 1)
+            }
+        }
+    }
+
+    func testMixedModelsKeepDescriptiveRatioWithoutUncachedPriority() {
+        let items = SessionOptimizer.analyze((0..<6).map {
+            record($0, cache: .measured(0), model: $0 < 3 ? "model-a" : "model-b")
+        })
+        let ratio = items.first { $0.type == .highInputToOutput }
+        XCTAssertEqual(ratio?.basis, .measurementLimited)
+        XCTAssertFalse(ratio!.tokenEvidence.comparableModelProvider)
+        XCTAssertFalse(items.contains { $0.type == .contextGrowth })
+    }
+
+    func testZeroOutputDoesNotInventRatioOrHideMeasuredUncachedGrowth() {
+        let items = SessionOptimizer.analyze((0..<6).map {
+            record($0, input: 50_000, output: 0, cache: .measured($0 < 3 ? 49_000 : 20_000))
+        })
+        XCTAssertFalse(items.contains { $0.type == .highInputToOutput })
+        XCTAssertEqual(items.first { $0.type == .contextGrowth }?.basis, .uncachedInput)
+        XCTAssertTrue(items.allSatisfy { $0.impactClassification == .theoreticalOpportunity })
+    }
+
+    func testClaudeCreationCacheRemainsPartOfUncachedInput() {
+        let rows = (0..<3).compactMap { i in ClaudeCodeAdapter.parse([
+            "type": "assistant", "sessionId": "claude-fixture", "cwd": "/fixture/project",
+            "timestamp": "2026-01-01T00:00:0\(i)Z",
+            "message": ["id": "message-\(i)", "model": "claude-fixture-model",
+                "usage": ["input_tokens": 10, "output_tokens": 500,
+                    "cache_creation_input_tokens": 20_000, "cache_read_input_tokens": 80_000]]
+        ], file: URL(fileURLWithPath: "/fixture/session.jsonl")) }
+        XCTAssertEqual(rows.count, 3)
+        let ratio = SessionOptimizer.analyze(rows).first { $0.type == .highInputToOutput }
+        XCTAssertEqual(ratio?.tokenEvidence.totalInput, 300_030)
+        XCTAssertEqual(ratio?.tokenEvidence.cacheRead, 240_000)
+        XCTAssertEqual(ratio?.tokenEvidence.uncachedInput, 60_030)
+        XCTAssertTrue(ratio!.tokenEvidence.uncachedIncludesCacheCreation)
+        XCTAssertTrue(ratio!.tokenEvidence.uncachedLabel.contains("création incluse"))
+        XCTAssertTrue(SessionOptimizer.analyze(rows).allSatisfy {
+            $0.impactClassification == .theoreticalOpportunity && $0.estimatedImpact.contains("aucun gain")
+        })
+    }
 }

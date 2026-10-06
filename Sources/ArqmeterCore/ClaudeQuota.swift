@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Official Claude Code statusLine fields only. Never reads credentials,
 /// private endpoints, token counts, transcripts or third-party quota caches.
@@ -12,6 +13,7 @@ public struct ClaudeQuotaReport: Codable, Equatable, Sendable {
     public let cliVersion: String?
     public let fiveHour: Window?
     public let sevenDay: Window?
+    public let receiptFingerprint: String?
 
     public enum Period: String, CaseIterable, Sendable {
         case fiveHour = "5 heures"
@@ -24,7 +26,8 @@ public struct ClaudeQuotaReport: Codable, Equatable, Sendable {
                 struct RawWindow: Decodable { let used_percentage: Double?; let resets_at: Double? }
                 let five_hour: RawWindow?; let seven_day: RawWindow?
             }
-            let version: String?; let rate_limits: Limits?
+            struct Cost: Decodable { let total_api_duration_ms: Double? }
+            let version: String?; let rate_limits: Limits?; let cost: Cost?; let session_id: String?
         }
         guard data.count <= 256 * 1024 else { throw CocoaError(.fileReadTooLarge) }
         let input = try JSONDecoder().decode(Input.self, from: data)
@@ -34,8 +37,22 @@ public struct ClaudeQuotaReport: Codable, Equatable, Sendable {
             return Window(usedPercentage: used, resetsAt: Date(timeIntervalSince1970: reset))
         }
         let version = input.version.flatMap { $0.count <= 32 && $0.allSatisfy({ $0.isNumber || $0 == "." || $0 == "-" }) ? $0 : nil }
-        return Self(receivedAt: receivedAt, cliVersion: version,
-                    fiveHour: window(input.rate_limits?.five_hour), sevenDay: window(input.rate_limits?.seven_day))
+        let five = window(input.rate_limits?.five_hour), seven = window(input.rate_limits?.seven_day)
+        var identity: [String: Any] = [:]
+        if let five { identity["fiveUsed"] = five.usedPercentage; identity["fiveReset"] = five.resetsAt.timeIntervalSince1970 }
+        if let seven { identity["sevenUsed"] = seven.usedPercentage; identity["sevenReset"] = seven.resetsAt.timeIntervalSince1970 }
+        if let elapsed = input.cost?.total_api_duration_ms, elapsed.isFinite, elapsed >= 0 { identity["apiDuration"] = elapsed }
+        if let session = input.session_id, session.utf8.count <= 128 { identity["session"] = session }
+        // Store only the digest, not a session ID, transcript, token count, cost amount or credential.
+        let normalized = try JSONSerialization.data(withJSONObject: identity, options: [.sortedKeys])
+        let fingerprint = SHA256.hash(data: normalized).map { String(format: "%02x", $0) }.joined()
+        return Self(receivedAt: receivedAt, cliVersion: version, fiveHour: five, sevenDay: seven, receiptFingerprint: fingerprint)
+    }
+    @discardableResult public static func captureStatusLine(_ data: Data, receivedAt: Date, url: URL = cacheURL) throws -> Bool {
+        let incoming = try decodeStatusLine(data, receivedAt: receivedAt)
+        guard incoming.current(at: receivedAt) != nil else { return false }
+        if read(url: url)?.receiptFingerprint == incoming.receiptFingerprint { return false }
+        try incoming.save(url: url); return true
     }
 
     /// Weekly first; independently absent/expired windows never become 100%.

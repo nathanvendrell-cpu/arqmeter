@@ -345,6 +345,7 @@ final class OfficialUsageMonitor {
     private var codexWindow: NSWindow?
     private var statusTimer: Timer?
     private var presentationConfigured = false
+    private var quotaWakeObserver: NSObjectProtocol?
 
     init(qaDashboard: DashboardModel? = nil) {
         nativeQA = qaDashboard != nil
@@ -380,6 +381,13 @@ final class OfficialUsageMonitor {
         if !nativeQA {
             ClaudeOfficialPage.shared.startIfEnabled()
             ClaudeDesktopQuotaReader.shared.startIfSelected()
+            ClaudeCLIQuotaReader.shared.startIfSelected()
+            quotaWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+                object: nil, queue: .main) { _ in MainActor.assumeIsolated {
+                    ClaudeCLIQuotaReader.shared.startIfSelected()
+                    ClaudeOfficialPage.shared.startIfEnabled()
+                    ClaudeDesktopQuotaReader.shared.startIfSelected()
+                } }
             statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             statusItem.button?.title = "— %"
             statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
@@ -401,7 +409,10 @@ final class OfficialUsageMonitor {
             print("QA présentation configurée, popover visible=\(popover.isShown)"); fflush(stdout)
             return
         }
-        sourcePreferences.onChange = { [weak self] in self?.updateStatusTitle() }
+        sourcePreferences.onChange = { [weak self] in
+            ClaudeCLIQuotaReader.shared.startIfSelected()
+            self?.updateStatusTitle()
+        }
         statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusTitle() }
         }
@@ -567,6 +578,8 @@ final class OfficialUsageMonitor {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let quotaWakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(quotaWakeObserver) }
+        ClaudeCLIQuotaReader.shared.stop(waitForCleanup: true)
         ClaudeOfficialPage.shared.stop()
         ClaudeDesktopQuotaReader.shared.stop()
         statusTimer?.invalidate()
@@ -582,12 +595,35 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
         ?? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("provider-qa-history.sqlite3")
     do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.native(database: database) }; exit(EXIT_SUCCESS) }
     catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if let index = CommandLine.arguments.firstIndex(of: "--claude-cli-replay-error-frame"), CommandLine.arguments.count > index + 1 {
+    do { try ClaudeCLIQuotaReader.replayErrorFrame(url: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(EXIT_SUCCESS) }
+    catch { fputs("Replay diagnostic failed\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--claude-cli-cleanup-test") {
+    ClaudeCLIQuotaReader.cleanupProbe()
+    exit(EXIT_SUCCESS)
+} else if let index = CommandLine.arguments.firstIndex(of: "--claude-cli-probe"), CommandLine.arguments.count > index + 1 {
+    let panelIndex = CommandLine.arguments.firstIndex(of: "--claude-cli-panel-diagnostic")
+    let panelURL = panelIndex.flatMap { CommandLine.arguments.count > $0 + 1 ? URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) : nil }
+    ClaudeCLIQuotaReader.probe(directory: URL(fileURLWithPath: CommandLine.arguments[index + 1]), diagnosticPanelURL: panelURL)
+    exit(EXIT_SUCCESS)
+} else if let index = CommandLine.arguments.firstIndex(of: "--claude-cli-setup-diagnostic"), CommandLine.arguments.count > index + 2 {
+    ClaudeCLIQuotaReader.probe(directory: URL(fileURLWithPath: CommandLine.arguments[index + 1]),
+        diagnosticPanelURL: URL(fileURLWithPath: CommandLine.arguments[index + 2]), setupOnly: true)
+    exit(EXIT_SUCCESS)
 } else if CommandLine.arguments.contains("--claude-desktop-probe") {
     MainActor.assumeIsolated { ClaudeDesktopQuotaReader.probe() }
     exit(EXIT_SUCCESS)
 } else if CommandLine.arguments.contains("--claude-web-self-test") {
     do { try MainActor.assumeIsolated { try ClaudeOfficialPage.lifecycleSelfTest() }; exit(EXIT_SUCCESS) }
     catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if let index = CommandLine.arguments.firstIndex(of: "--claude-web-existing-session-probe"), CommandLine.arguments.count > index + 1 {
+    do {
+        _ = NSApplication.shared
+        try MainActor.assumeIsolated {
+            try ClaudeOfficialPage.existingSessionProbe(cacheURL: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+        }
+        exit(EXIT_SUCCESS)
+    } catch { fputs("Existing-session probe failed\n", stderr); exit(EXIT_FAILURE) }
 } else if CommandLine.arguments.contains("--claude-accessibility-status") {
     print("Claude native reader permission probe: AXIsProcessTrusted=\(AXIsProcessTrusted()); no prompt, no permission change, no content read; bundle=\(Bundle.main.bundleIdentifier ?? "unbundled")")
     exit(EXIT_SUCCESS)
@@ -610,7 +646,7 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
               let chunk = try FileHandle.standardInput.read(upToCount: min(8192, 256 * 1024 + 1 - data.count)), !chunk.isEmpty {
             data.append(chunk)
         }
-        try ClaudeQuotaReport.decodeStatusLine(data, receivedAt: Date()).save()
+        try ClaudeQuotaReport.captureStatusLine(data, receivedAt: Date())
         exit(EXIT_SUCCESS)
     } catch { exit(EXIT_FAILURE) }
 } else if CommandLine.arguments.contains("--menu-bar-native-test") {
@@ -628,6 +664,21 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
 } else if CommandLine.arguments.contains("--glass-native-test") {
     MainActor.assumeIsolated { GlassRecipe.nativeTest() }
     exit(EXIT_SUCCESS)
+} else if let index = CommandLine.arguments.firstIndex(of: "--render-advice-card") {
+    guard CommandLine.arguments.count > index + 2 else {
+        fputs("Cas et sortie PNG requis ; aucun démarrage normal.\n", stderr)
+        exit(EXIT_FAILURE)
+    }
+    do {
+        try MainActor.assumeIsolated {
+            try AdviceCardRecipe.render(scenario: CommandLine.arguments[index + 1],
+                to: URL(fileURLWithPath: CommandLine.arguments[index + 2]))
+        }
+        exit(EXIT_SUCCESS)
+    } catch {
+        fputs("Rendu du conseil échoué : \(error)\n", stderr)
+        exit(EXIT_FAILURE)
+    }
 } else if let index = CommandLine.arguments.firstIndex(of: "--render-quota-card") {
     do {
         try MainActor.assumeIsolated {

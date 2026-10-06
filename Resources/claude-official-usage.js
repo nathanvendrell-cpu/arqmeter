@@ -6,7 +6,9 @@
       location.pathname.replace(/\/+$/, '') !== '/settings/usage') return absent;
   const normalize = s => (s || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
   const headings = [...document.querySelectorAll('h1,h2,h3')].slice(0, 80);
-  if (!headings.some(e => ['usage', 'your usage', 'votre utilisation', 'utilisation'].includes(normalize(e.innerText)))) return absent;
+  // Headings vary ("Usage", "Plan usage limits", "Limites d'utilisation du forfait");
+  // the route check above already pins the page, this only rejects unrelated layouts.
+  if (!headings.some(e => /\b(usage|utilisation)\b/.test(normalize(e.innerText)))) return absent;
   const nodes = [...document.querySelectorAll('h2,h3,h4,p,span,div,label')].slice(0, 5000)
     .filter(e => e.children.length === 0);
   const resetPattern = /^(resets?\b|reset\b|réinitialisation\b|se réinitialise\b)/i;
@@ -46,7 +48,7 @@
     const distinct = [...new Set(results.map(v => JSON.stringify(v)))];
     return distinct.length === 1 ? JSON.parse(distinct[0]) : null;
   };
-  const session = find(['current session', 'session actuelle']);
+  const session = find(['current session', 'session actuelle', 'session en cours']);
   const weekly = find(['all models', 'tous les modèles', 'this week', 'cette semaine']);
   return { recognized: session !== null || weekly !== null, session, weekly };
 })()
