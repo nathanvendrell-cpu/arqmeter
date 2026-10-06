@@ -11,8 +11,12 @@
 - Correction d'un arrondi machine fraction → pourcentage ; les vrais décimaux
   conservent leur valeur et leur pourcentage restant conservateur.
 - 35 tests ciblés et 7 autotests réussis. L'échec initial d'arrondi est conservé.
-- Production installée mais acquisition native non validée : droit macOS manquant.
-  Aucun pourcentage acquis par un autre outil n'a été injecté dans les données.
+- À l'installation initiale, acquisition bloquée par le droit macOS manquant.
+  Après autorisation, lectures natives réelles observées, puis régression après
+  relance de Claude malgré un droit valide. Aucun correctif livré, aucune autonomie
+  panneau fermé validée, aucune injection de quota d'un autre outil.
+- Documentation de reprise actualisée : [suivi automatique Claude](HANDOFF_CLAUDE_QUOTA.md).
+  Ce suivi documentaire ne modifie ni le binaire, ni le tag, ni la release 1.0.13.
 - HUD, conseils, Codex, préférences, historiques et rollback conservés.
 
 ## 1.0.12 — 2026-10-05

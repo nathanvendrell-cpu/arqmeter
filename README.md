@@ -9,10 +9,12 @@ pas un quota, et un ancien journal n’est pas une session en cours.
 Un lecteur facultatif peut maintenant observer les compteurs du panneau
 **Utilisation de Claude Desktop déjà connecté**, sans seconde connexion.
 Il requiert une autorisation macOS propre à Arqmeter et le panneau Utilisation
-ouvert dans la fenêtre Claude observée. Ce mode reste expérimental : sa lecture
-par l'application installée n'a pas encore pu être validée, faute d'autorisation
-Accessibilité. La présence de compteurs dans Claude ne vaut pas preuve de leur
-acquisition par Arqmeter. Voir les limites et le réglage ci-dessous.
+ouvert dans la fenêtre Claude observée. Une acquisition réelle par l'application
+installée a été observée après autorisation, puis une régression après relance
+de Claude, malgré une autorisation toujours valide. Ce mode reste expérimental
+et ne fournit pas un suivi autonome lorsque le panneau est fermé. Aucun correctif
+de cette régression n'est livré. Voir les limites ci-dessous et le
+[handoff du suivi automatique Claude](HANDOFF_CLAUDE_QUOTA.md).
 
 La barre de menus réunit désormais les logos Claude et Codex, chacun avec son
 pourcentage **restant**, dans un seul cadre. Les limites ne sont jamais additionnées.
@@ -165,9 +167,10 @@ Un échec d'arrondi fraction → pourcentage a été conservé puis corrigé ave
 tolérance de deux ULP près des entiers, sans arrondir les vrais décimaux.
 Les 111 tests moteur et les 18 contrôles de DOM de la précédente connexion ne
 sont pas rejoués ni présentés comme une nouvelle preuve d'authentification.
-Le service installé rapporte explicitement une autorisation Accessibilité
-manquante : acquisition native, deux observations successives en arrière-plan
-et fraîcheur serveur ne sont pas déclarées validées.
+L'obstacle initial d'autorisation Accessibilité a été résolu et des acquisitions
+natives réelles ont été observées. La régression après relance de Claude reste
+non corrigée ; aucune autonomie avec le panneau fermé n'est déclarée validée.
+La lecture locale ne constitue toujours pas une preuve de fraîcheur serveur.
 Le nouveau cadre a été contrôlé par rendu AppKit hors écran, pas par une capture
 de la barre de menus installée ; cette observation native reste à confirmer.
 Le déplacement et le
