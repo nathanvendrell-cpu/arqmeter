@@ -4,7 +4,7 @@ Un centre de pilotage macOS pour la consommation observée de Codex, Claude Code
 Gemini CLI et Ollama. Les sources restent séparées : les tokens ne sont pas un
 quota, et un ancien journal n'est pas une session en cours.
 
-## Sources 1.0.19 — préversion
+## Sources 1.0.20 — préversion
 
 - Fenêtre historique de 420 × 650 points, ouverte directement depuis la barre
   de menus. Un nouveau clic la masque ou la rouvre ; déplacement par l'en-tête.
@@ -16,6 +16,27 @@ quota, et un ancien journal n'est pas une session en cours.
   accessibles. Aucune mesure manquante n'est inventée.
 - Quotas Codex et Claude côte à côte, jamais additionnés. Pour Claude : choix
   mémorisé **5 h**, **Semaine** ou **Les deux**, avec 5 h en premier.
+
+### Analyse quotidienne dans la vue complète
+
+« Voir les détails » → « Vue d’ensemble » ouvre d'abord la consommation de
+la semaine civile, jour par jour. Les barres se consultent au survol ou au clic ;
+les flèches du jour et « Valeurs par jour » donnent aussi accès aux chiffres exacts.
+Le sélecteur Semaine/Mois et les flèches de période permettent de parcourir les
+archives sans changer les filtres des sessions ou des conseils.
+
+Choisir **Codex · compte** pour les volumes quotidiens officiels du compte
+(jours UTC), ou une source **ce Mac** pour ses événements locaux (fuseau du Mac).
+Ces populations ne sont jamais fusionnées. Les sources locales proposent la
+mesure et le dossier observé : total traité, entrée hors cache, sortie, cache lu ;
+Ollama expose sa durée locale lorsqu'elle est mesurée, pas des tokens inventés.
+Le cache lu est déjà inclus dans l'entrée et ne s'ajoute pas au total traité.
+
+Les jours manquants ne valent pas zéro ; les sommes incomplètes et la journée
+en cours sont signalées. Aucun volume n'est converti en coût ou quota. Les cadrans,
+comparaisons, sources et preuves restent accessibles à la demande, et le HUD
+validé n'est pas recomposé. La lecture utilise les collecteurs et archives
+existants : pas de nouvel appel modèle ni de minuterie de collecte supplémentaire.
 
 ### Claude : réception passive et dernier relevé explicite
 
@@ -78,8 +99,10 @@ de données. Ne pas lancer plusieurs copies simultanément.
 Validation : tests moteur, autotests du binaire, tests du pont et signature ad hoc
 sont distincts d'une observation native et d'une acceptation visuelle. Les tests
 utilisent des exemples construits ; aucun reçu de compte réel n'est publié.
-La passe 1.0.19 couvre 184 tests Swift, 7 tests du mod et les contrôles hors réseau
+La passe 1.0.20 couvre 192 tests Swift, 7 tests du mod et les contrôles hors réseau
 de présentation, cadrans, statistiques, comparaison, quota, barre et extracteur DOM.
+La recette d'analyse vérifie aussi la sélection de source, mesure et dossier,
+les réponses asynchrones dépassées et les états vides, sans requête de compte réel.
 
 La distribution précédente Apple Silicon est signée ad hoc, non notarisée.
 RELEASE.json et SHA256SUMS décrivent cette distribution ancienne, **pas** le

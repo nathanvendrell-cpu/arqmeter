@@ -3,6 +3,7 @@ import ArqmeterCore
 
 extension Notification.Name {
     static let arqmeterHistoryUpdated = Notification.Name("com.7agency.arqmeter.history-updated")
+    static let arqmeterAnalysisRefreshRequested = Notification.Name("com.7agency.arqmeter.analysis-refresh-requested")
 }
 
 struct HistoricalDashboardSnapshot {
@@ -134,6 +135,23 @@ final class HistoricalUsageService {
                 recommendations: recommendations, comparability: comparisons,
                 scanResults: self.recentScans, error: self.lastError)
             DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// Targeted read of the existing store, no scan, recommendation pass or new
+    /// timer. Calendar navigation does not change the sessions/Optimizer scope.
+    func analysisRecords(harness: String, from start: Date, to end: Date,
+                         completion: @escaping ([UnifiedUsageRecord], String?) -> Void) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let records: [UnifiedUsageRecord], errorMessage: String?
+            do {
+                if let store = self.engine?.store {
+                    records = try store.records(harness: harness, from: start, to: end)
+                    errorMessage = self.lastError
+                } else { records = []; errorMessage = "Historique local pas encore disponible" }
+            } catch { records = []; errorMessage = "Lecture de cette période impossible" }
+            DispatchQueue.main.async { completion(records, errorMessage) }
         }
     }
 

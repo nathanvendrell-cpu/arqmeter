@@ -1,5 +1,20 @@
 # Changements
 
+## 1.0.20 — 2026-10-07 — sources
+
+- La vue complète ouvre l'analyse quotidienne : semaine civile ou mois,
+  navigation dans les périodes, barres interactives et valeurs exactes par jour.
+- Volumes officiels Codex du compte en UTC séparés des événements locaux ;
+  choix de source, mesure et dossier réellement observé. Durée locale pour Ollama.
+- Jours manquants, événements sans mesure et journée en cours explicités ;
+  aucun zéro, quota, coût ou token local fabriqué. Cache non additionné deux fois.
+- Cadrans en direct et comparaisons déplacés dans des volets secondaires de la
+  vue complète. HUD validé, sessions, conseils, preuves et essais conservés.
+- Lecture ciblée du SQLite existant, pas de nouvelle collecte, dépendance tierce
+  ou appel modèle. Huit tests moteur supplémentaires et recette des filtres/races.
+- Stabilisation Claude de 1.0.19 conservée ; pas de changement des bases,
+  de la déduplication ou des préférences utilisateur.
+
 ## 1.0.19 — 2026-10-07 — sources
 
 - Pont Claude Code Mods passif : fenêtres officielles 5 h et semaine, sans

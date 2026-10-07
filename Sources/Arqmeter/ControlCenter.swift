@@ -345,7 +345,10 @@ struct ControlCenterView: View {
                 .frame(width: 160)
                 .onChange(of: product.windowDays) { _ in product.refresh() }
             }
-            Button { product.refresh(days: readingMode == "simple" ? 7 : nil) } label: { Image(systemName: "arrow.clockwise") }
+            Button {
+                product.refresh(days: readingMode == "simple" ? 7 : nil)
+                NotificationCenter.default.post(name: .arqmeterAnalysisRefreshRequested, object: nil)
+            } label: { Image(systemName: "arrow.clockwise") }
                 .help("Actualiser les données persistées")
                 .accessibilityLabel("Actualiser")
             Button { showSettings = true } label: { Image(systemName: "gearshape") }
@@ -480,9 +483,12 @@ struct ControlCenterView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Consommation").font(.system(size: 24, weight: .semibold, design: .rounded))
             if let error = product.snapshot?.error { notice(error, color: .orange) }
+            DailyAnalysisPanel(comparison: dashboard.comparison)
             if let snapshot = product.snapshot {
-                liveConsumption
-                weeklySummary
+                DisclosureGroup("Activité en direct") { liveConsumption.padding(.top, 12) }
+                    .font(.system(size: 14, weight: .medium))
+                DisclosureGroup("Comparer les périodes") { weeklySummary.padding(.top, 12) }
+                    .font(.system(size: 14, weight: .medium))
                 DisclosureGroup("Sources et statistiques") {
                     sourcesPanel(snapshot).padding(.top, 12)
                 }.font(.system(size: 14, weight: .medium))
@@ -495,7 +501,6 @@ struct ControlCenterView: View {
                 }
                 .font(.system(size: 13))
             } else {
-                liveConsumption
                 if product.loading { ProgressView("Lecture de l’historique…") }
             }
         }

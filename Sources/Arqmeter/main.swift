@@ -632,6 +632,18 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
 } else if let index = CommandLine.arguments.firstIndex(of: "--provider-layout-native-qa"), CommandLine.arguments.count > index + 1 {
     do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.native(database: URL(fileURLWithPath: CommandLine.arguments[index + 1])) }; exit(EXIT_SUCCESS) }
     catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--daily-analysis-self-test") {
+    do { try MainActor.assumeIsolated { try DailyAnalysisRecipe.selfTest() }; exit(EXIT_SUCCESS) }
+    catch { fputs("Daily analysis self-test failed\n", stderr); exit(EXIT_FAILURE) }
+} else if let index = CommandLine.arguments.firstIndex(of: "--render-daily-analysis"), CommandLine.arguments.count > index + 1 {
+    do {
+        try MainActor.assumeIsolated {
+            try DailyAnalysisRecipe.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]),
+                width: CommandLine.arguments.contains("--analysis-narrow") ? 520 : 820,
+                real: CommandLine.arguments.contains("--analysis-real"), month: CommandLine.arguments.contains("--analysis-month"),
+                empty: CommandLine.arguments.contains("--analysis-empty"))
+        }; exit(EXIT_SUCCESS)
+    } catch { fputs("Daily analysis render failed\n", stderr); exit(EXIT_FAILURE) }
 } else if CommandLine.arguments.contains("--claude-quota-menu-status") {
     MainActor.assumeIsolated { ProviderQuotaMenu.reportCurrent() }
     exit(EXIT_SUCCESS)
