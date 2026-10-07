@@ -379,14 +379,10 @@ final class OfficialUsageMonitor {
         guard !presentationConfigured else { return }
         presentationConfigured = true
         if !nativeQA {
-            ClaudeOfficialPage.shared.startIfEnabled()
-            ClaudeDesktopQuotaReader.shared.startIfSelected()
             ClaudeCLIQuotaReader.shared.startIfSelected()
             quotaWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
                 object: nil, queue: .main) { _ in MainActor.assumeIsolated {
                     ClaudeCLIQuotaReader.shared.startIfSelected()
-                    ClaudeOfficialPage.shared.startIfEnabled()
-                    ClaudeDesktopQuotaReader.shared.startIfSelected()
                 } }
             statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             statusItem.button?.title = "— %"
@@ -416,6 +412,7 @@ final class OfficialUsageMonitor {
         statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusTitle() }
         }
+        if let statusTimer { RunLoop.main.add(statusTimer, forMode: .common) }
         updateStatusTitle()
 
         let monitor = OfficialUsageMonitor(onUpdate: { [weak self] snapshot in
@@ -494,7 +491,8 @@ final class OfficialUsageMonitor {
         guard let button = statusItem?.button else { return }
         ProviderQuotaMenu.apply(to: button, codexRemaining: dashboard.remainingPercent,
             codexSampledAt: dashboard.officialSampledAt, codexReset: dashboard.resetsAt,
-            claude: ClaudeQuotaReport.read(), now: Date(), orderedIDs: sourcePreferences.orderedVisibleIDs)
+            claude: ClaudeQuotaReport.read(), now: Date(), orderedIDs: sourcePreferences.orderedVisibleIDs,
+            claudeMode: sourcePreferences.claudeQuotaMode)
     }
 
     private func openControlCenter() {
@@ -580,8 +578,6 @@ final class OfficialUsageMonitor {
     func applicationWillTerminate(_ notification: Notification) {
         if let quotaWakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(quotaWakeObserver) }
         ClaudeCLIQuotaReader.shared.stop(waitForCleanup: true)
-        ClaudeOfficialPage.shared.stop()
-        ClaudeDesktopQuotaReader.shared.stop()
         statusTimer?.invalidate()
         statusTimer = nil
         dashboard.stopAllLive()
@@ -598,6 +594,9 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
 } else if let index = CommandLine.arguments.firstIndex(of: "--claude-cli-replay-error-frame"), CommandLine.arguments.count > index + 1 {
     do { try ClaudeCLIQuotaReader.replayErrorFrame(url: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(EXIT_SUCCESS) }
     catch { fputs("Replay diagnostic failed\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--claude-control-cleanup-test") {
+    do { try ClaudeUsageControlReader.cleanupSelfTest(); exit(EXIT_SUCCESS) }
+    catch { fputs("Control cleanup test failed\n", stderr); exit(EXIT_FAILURE) }
 } else if CommandLine.arguments.contains("--claude-cli-cleanup-test") {
     ClaudeCLIQuotaReader.cleanupProbe()
     exit(EXIT_SUCCESS)
@@ -633,6 +632,9 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
 } else if let index = CommandLine.arguments.firstIndex(of: "--provider-layout-native-qa"), CommandLine.arguments.count > index + 1 {
     do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.native(database: URL(fileURLWithPath: CommandLine.arguments[index + 1])) }; exit(EXIT_SUCCESS) }
     catch { fputs("\(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--claude-quota-menu-status") {
+    MainActor.assumeIsolated { ProviderQuotaMenu.reportCurrent() }
+    exit(EXIT_SUCCESS)
 } else if CommandLine.arguments.contains("--menu-quota-self-test") {
     do { try MainActor.assumeIsolated { try ProviderQuotaMenu.selfTest() }; exit(EXIT_SUCCESS) }
     catch { exit(EXIT_FAILURE) }

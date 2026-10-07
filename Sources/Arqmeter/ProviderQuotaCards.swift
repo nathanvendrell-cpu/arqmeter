@@ -90,11 +90,7 @@ struct ProviderQuotaCards: View {
     @ObservedObject var preferences: SourceDisplayPreferences
     let historical: HistoricalDashboardSnapshot?
     let claude: ClaudeQuotaReport?
-    let webClaude: ClaudeWebQuotaReport?
-    let webSelected: Bool
     let now: Date
-    var desktop: ClaudeDesktopQuotaReport? = nil
-    var desktopSelected: Bool = false
     var cli: ClaudeCLIQuotaReport? = nil
     @State private var dragging: String?
 
@@ -121,16 +117,20 @@ struct ProviderQuotaCards: View {
     }
 
     private func claudeCard(handle: AnyView) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let snapshot = ClaudeMenuQuotaSnapshot.make(statusLine: claude, cli: cli, at: now)
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Quota Claude").font(.system(size: 16, weight: .semibold, design: .rounded))
                 Spacer()
                 handle
             }
+            if snapshot.isLastKnown {
+                Label("Dernier relevé · non actualisé", systemImage: "clock")
+                    .font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
+            }
             HStack(alignment: .top, spacing: 14) {
                 ForEach(ClaudeQuotaReport.Period.allCases, id: \.rawValue) { period in
-                    let window = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
-                        desktop: desktop, desktopSelected: desktopSelected, cli: cli, at: now)?.window(period)
+                    let window = snapshot.readout?.window(period)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(period.rawValue).font(.system(size: 12, weight: .medium))
                             .foregroundStyle(InstrumentTheme.secondary)
@@ -148,18 +148,15 @@ struct ProviderQuotaCards: View {
                     .accessibilityElement(children: .combine)
                 }
             }
-            if let readout = ClaudePlanQuotaReadout.make(statusLine: claude, web: webClaude, webSelected: webSelected,
-                desktop: desktop, desktopSelected: desktopSelected, cli: cli, at: now) {
+            if let readout = snapshot.readout {
                 Text("\(readout.provenance) · \(readout.observedAt.formatted(.dateTime.hour().minute()))")
                     .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
             } else {
-                Text(desktopSelected ? ClaudeDesktopQuotaReader.shared.state : webSelected ? ClaudeOfficialPage.shared.state : ClaudeCLIQuotaReader.shared.state)
+                Text(ClaudeCLIQuotaReader.shared.state)
                     .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let last = ClaudePlanQuotaReadout.lastKnownDescription(statusLine: claude,
-                    web: webSelected ? (webClaude ?? ClaudeWebQuotaReport.read()) : nil, webSelected: webSelected,
-                    desktop: desktopSelected ? (desktop ?? ClaudeDesktopQuotaReport.read()) : nil,
-                    desktopSelected: desktopSelected, cli: cli, at: now) {
+                    web: nil, webSelected: false, desktop: nil, desktopSelected: false, cli: cli, at: now) {
                     Text(last).font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -207,21 +204,16 @@ struct ProviderQuotaCards: View {
 /// The two-second cache refresh exists only while the quota panel is displayed;
 /// it does not scan providers, contact a model or add a timer to Direct.
 struct LiveProviderQuotaCards: View {
-    var connection: ClaudeOfficialPage = .shared
     @ObservedObject var dashboard: DashboardModel
     @ObservedObject var preferences: SourceDisplayPreferences
     let historical: HistoricalDashboardSnapshot?
     @State private var report = ClaudeQuotaReport.read()
-    @State private var webReport: ClaudeWebQuotaReport?
     @State private var now = Date()
     var body: some View {
         ProviderQuotaCards(dashboard: dashboard, preferences: preferences,
-            historical: historical, claude: report, webClaude: webReport, webSelected: connection.selected, now: now,
-            desktop: ClaudeDesktopQuotaReport.readActive(),
-            desktopSelected: UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey), cli: ClaudeCLIQuotaReport.read())
+            historical: historical, claude: report, now: now, cli: ClaudeCLIQuotaReport.read())
             .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) {
-                now = $0; report = ClaudeQuotaReport.read(); webReport = connection.report
+                now = $0; report = ClaudeQuotaReport.read()
             }
-            .onAppear { webReport = connection.report }
     }
 }

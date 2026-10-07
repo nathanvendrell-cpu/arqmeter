@@ -29,6 +29,7 @@ enum SourceDisplay {
 final class SourceDisplayPreferences: ObservableObject {
     static let shared = SourceDisplayPreferences()
     @Published private(set) var layout: SourceLayout
+    @Published private(set) var claudeQuotaMode: ClaudeMenuQuotaMode
     var visibleIDs: Set<String> { layout.visibleIDs }
     var primaryID: String { layout.primaryID }
     var orderedIDs: [String] { layout.orderedIDs }
@@ -39,9 +40,17 @@ final class SourceDisplayPreferences: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         layout = SourceLayout.load(from: defaults)
+        claudeQuotaMode = ClaudeMenuQuotaMode.load(from: defaults)
     }
 
     var orderedVisibleIDs: [String] { layout.orderedVisibleIDs }
+
+    func setClaudeQuotaMode(_ mode: ClaudeMenuQuotaMode) {
+        guard mode != claudeQuotaMode else { return }
+        claudeQuotaMode = mode
+        mode.save(to: defaults)
+        onChange?()
+    }
 
     func setVisible(_ id: String, _ visible: Bool) {
         update { $0.setVisible(id, visible) }

@@ -1,0 +1,13 @@
+{
+  "name": "arqmeter",
+  "description": "Connecteurs locaux facultatifs pour les mesures de consommation Arqmeter.",
+  "owner": { "name": "Arqmeter" },
+  "plugins": [
+    {
+      "name": "arqmeter-quota-bridge",
+      "source": "./plugins/claude-quota-bridge",
+      "version": "0.1.0",
+      "description": "Pont local passif des mesures officielles Claude Code vers Arqmeter."
+    }
+  ]
+}

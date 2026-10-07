@@ -1,0 +1,6 @@
+{
+  "name": "arqmeter-quota-bridge",
+  "version": "0.1.0",
+  "description": "Pont local passif des mesures officielles Claude Code vers Arqmeter.",
+  "author": { "name": "Arqmeter" }
+}

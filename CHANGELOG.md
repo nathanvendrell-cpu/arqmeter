@@ -1,5 +1,30 @@
 # Changements
 
+## 1.0.19 — 2026-10-07 — sources
+
+- Pont Claude Code Mods passif : fenêtres officielles 5 h et semaine, sans
+  réponse modèle, réseau supplémentaire, lecture de credentials ou transcripts.
+- Choix mémorisé 5 h / Semaine / Les deux ; 5 h en premier, quotas restants séparés.
+- Correction de la disparition après trois minutes sans événement : dernier
+  relevé conservé avec horloge, infobulle et état non actualisé explicites. Aucun
+  timestamp renouvelé ; chaque fenêtre est invalidée à son reset connu.
+- L'ellipse ne signifie une lecture en cours que lorsqu'une lecture est active.
+- Lecture de secours officielle bornée, rejet strict des réponses nulles, backoff
+  conservé et nettoyage des enfants. Les anciens parcours Web/Desktop restent
+  archivés dans le code mais ne sont plus proposés comme suivi courant.
+- Correctifs cache-aware des conseils conservés : pas de gain/coût déduit du
+  volume cache, couverture des mesures et essais manuels toujours accessibles.
+- HUD validé, Codex, adaptateurs, historiques SQLite et préférences préservés.
+- Publication des sources uniquement : les sommes de contrôle de la distribution
+  précédente restent identifiées comme telles, sans les attribuer à ce build.
+
+## 1.0.14 — 2026-10-06 — sources
+
+- Conseils cache-aware : contexte traité, cache lu et entrée hors cache distincts.
+- Absence de promesse d'économie sur une hausse dominée par le cache ; données
+  partielles et modèles mélangés non transformés en comparaison fiable.
+- Synchronisation du connecteur officiel avec la baseline installée.
+
 ## 1.0.13 — 2026-10-06
 
 - Source facultative Claude Desktop déjà connecté, sans seconde connexion :

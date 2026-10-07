@@ -42,6 +42,8 @@ public struct ClaudeCLIQuotaReport: Codable, Equatable, Sendable {
     public let observedAt: Date
     public let session: Window?
     public let weekly: Window?
+    public var transportKind: String? = nil
+    public var subscriptionType: String? = nil
     public func hasSameDisplayedValues(as other: Self?) -> Bool {
         func same(_ a: Window?, _ b: Window?) -> Bool {
             if a == nil && b == nil { return true }
@@ -51,12 +53,13 @@ public struct ClaudeCLIQuotaReport: Codable, Equatable, Sendable {
         return same(session, other?.session) && same(weekly, other?.weekly)
     }
     public enum Failure: String, Error, Codable, Sendable {
-        case limited, lastKnown, authentication, trust, unsupported, timeout, absent, stopped, cleanup
+        case limited, lastKnown, authentication, unavailable, trust, unsupported, timeout, absent, stopped, cleanup
         public var message: String {
             switch self {
             case .limited: return "Anthropic limite la lecture du quota · nouvelle tentative différée"
-            case .lastKnown: return "Claude affiche un ancien relevé · quota actuel non reçu"
+            case .lastKnown: return "Relevé Claude non certifié actuel · dernier quota conservé"
             case .authentication: return "Connexion Claude Code requise"
+            case .unavailable: return "Quota officiel Claude non reçu · connexion conservée"
             case .trust: return "Dossier du lecteur à confirmer dans Claude Code"
             case .unsupported: return "Quota officiel non reconnu · dernier relevé conservé"
             case .timeout: return "Claude Code n’a pas répondu · nouvelle tentative différée"
@@ -107,6 +110,11 @@ public struct ClaudeCLIQuotaReport: Codable, Equatable, Sendable {
         guard age >= -5, age < 180, let value = period == .fiveHour ? session : weekly,
               value.usedPercent.isFinite, (0...100).contains(value.usedPercent), value.expiresAt.map({ $0 > now }) ?? true else { return nil }
         return value
+    }
+    public var provenance: String {
+        transportKind == "official-get-usage-live"
+            ? "Claude Code · quota officiel reçu du serveur"
+            : "Claude Code · /usage officiel · fraîcheur serveur non fournie"
     }
     public static var cacheURL: URL { ClaudeQuotaReport.cacheURL.deletingLastPathComponent().appendingPathComponent("claude-cli-official-quota.json") }
     public static func read(url: URL = cacheURL) -> Self? {

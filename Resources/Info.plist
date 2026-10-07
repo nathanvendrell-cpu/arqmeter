@@ -1,17 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleDevelopmentRegion</key><string>fr</string>
-<key>CFBundleExecutable</key><string>Arqmeter</string>
-<key>CFBundleIdentifier</key><string>com.7agency.arqmeter</string>
-<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-<key>CFBundleName</key><string>Arqmeter</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.0.14</string>
-<key>CFBundleVersion</key><string>20261006.14</string>
-<key>ARQSourceBaseCommit</key><string>500e46033d7cc8ddc37a47041d8b0b32f9a9b765</string>
-<key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>LSUIElement</key><true/>
-<key>NSHighResolutionCapable</key><true/>
-<key>ARQClaudeStatusBridge</key><true/>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>ARQClaudeStatusBridge</key>
+	<true/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>fr</string>
+	<key>CFBundleExecutable</key>
+	<string>Arqmeter</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.7agency.arqmeter</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Arqmeter</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.19</string>
+	<key>CFBundleVersion</key>
+	<string>20261007.19</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

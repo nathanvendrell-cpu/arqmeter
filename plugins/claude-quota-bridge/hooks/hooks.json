@@ -1,0 +1,4 @@
+{
+  "description": "Observe uniquement session.measure et transmet les fenêtres de quota connues.",
+  "modules": ["./register.js"]
+}

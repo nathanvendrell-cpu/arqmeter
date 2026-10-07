@@ -122,11 +122,11 @@ public struct ClaudePlanQuotaReadout: Sendable {
         var codeReadouts: [Self] = []
         if let cli {
             func convert(_ period: ClaudeQuotaReport.Period) -> Window? {
-                cli.currentWindow(period, at: now).map { Window(remainingPercent: $0.remainingPercent, resetLabel: $0.resetLabel, resetsAt: nil) }
+                cli.currentWindow(period, at: now).map { Window(remainingPercent: $0.remainingPercent, resetLabel: $0.resetLabel, resetsAt: $0.expiresAt) }
             }
             let session = convert(.fiveHour), weekly = convert(.sevenDay)
             if session != nil || weekly != nil {
-                codeReadouts.append(Self(observedAt: cli.observedAt, provenance: "Claude Code · /usage officiel · fraîcheur serveur non fournie", session: session, weekly: weekly))
+                codeReadouts.append(Self(observedAt: cli.observedAt, provenance: cli.provenance, session: session, weekly: weekly))
             }
         }
         if let statusLine {
@@ -139,6 +139,12 @@ public struct ClaudePlanQuotaReadout: Sendable {
             }
         }
         return codeReadouts.max { $0.observedAt < $1.observedAt }
+    }
+
+    /// Active product path. Retained Web/Desktop archives cannot win selection.
+    public static func makeCode(statusLine: ClaudeQuotaReport?, cli: ClaudeCLIQuotaReport?, at now: Date) -> Self? {
+        make(statusLine: statusLine, web: nil, webSelected: false,
+             desktop: nil, desktopSelected: false, cli: cli, at: now)
     }
 
     /// Explicit history, never a current readout and never merged across selected account surfaces.

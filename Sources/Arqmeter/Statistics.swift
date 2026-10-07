@@ -133,8 +133,6 @@ struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     @ObservedObject private var sourcePreferences: SourceDisplayPreferences
     @StateObject private var sourcesModel: SourcesValidationModel
-    private let providedConnection: ClaudeOfficialPage?
-    @MainActor private var sourceConnection: ClaudeOfficialPage { providedConnection ?? .shared }
     @State private var showingSources = false
     @State private var showingSourceSettings = false
     @State private var now = Date()
@@ -161,12 +159,10 @@ struct DashboardView: View {
     init(model: DashboardModel, openDetails: (() -> Void)? = nil,
          onWindowDrag: ((NSEvent?) -> Void)? = nil,
          sourcePreferences: SourceDisplayPreferences = .shared,
-         sourcesModel: SourcesValidationModel = SourcesValidationModel(),
-         sourceConnection: ClaudeOfficialPage? = nil) {
+         sourcesModel: SourcesValidationModel = SourcesValidationModel()) {
         self.model = model
         self._sourcePreferences = ObservedObject(wrappedValue: sourcePreferences)
         self._sourcesModel = StateObject(wrappedValue: sourcesModel)
-        self.providedConnection = sourceConnection
         self.openDetails = openDetails
         self.onWindowDrag = onWindowDrag
     }
@@ -194,7 +190,7 @@ struct DashboardView: View {
                     case .dossiers:
                         ProjectListPanel(local: model.local, now: Date())
                     case .quota:
-                        LiveProviderQuotaCards(connection: sourceConnection, dashboard: model, preferences: sourcePreferences,
+                        LiveProviderQuotaCards(dashboard: model, preferences: sourcePreferences,
                             historical: sourcesModel.historical)
                         DisclosureGroup("Historique et répartition") {
                             currentCycleCard
@@ -240,7 +236,7 @@ struct DashboardView: View {
                                   quotaSampledAt: model.officialSampledAt)
         }
         .sheet(isPresented: $showingSourceSettings) {
-            SourceSettingsView(preferences: sourcePreferences, connection: sourceConnection)
+            SourceSettingsView(preferences: sourcePreferences)
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
         .onAppear {

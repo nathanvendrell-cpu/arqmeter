@@ -1,5 +1,10 @@
 # Reprise : quota Claude automatique
 
+> Archive de l'investigation 1.0.13. Depuis 1.0.19, le chemin actif est le
+> pont Claude Code Mods et la lecture de secours officielle. Voir le
+> [README actuel](README.md) et le [pont](plugins/claude-quota-bridge/README.md).
+> Les obstacles et essais ci-dessous ne décrivent pas le suivi actuel.
+
 ## Objectif
 
 Lire les limites officielles Claude **session (5 h) et semaine (7 j)** en

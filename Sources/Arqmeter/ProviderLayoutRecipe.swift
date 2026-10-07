@@ -45,8 +45,6 @@ import ArqmeterCore
         if let quota = OfficialUsageReader().snapshot() { dashboard.apply(snapshot: quota) }
         dashboard.selectedTab = .quota
         let preferences = SourceDisplayPreferences(defaults: UserDefaults(suiteName: suite)!)
-        let connection = ClaudeOfficialPage(defaults: UserDefaults(suiteName: suite)!,
-            cacheURL: database.deletingLastPathComponent().appendingPathComponent("qa-claude-official-page-quota.json"))
         let application = NSApplication.shared
         // This isolated recipe has a normal app identity so native QA can
         // select it without confusing it with the production menu-bar agent.
@@ -59,7 +57,7 @@ import ArqmeterCore
         window.isOpaque = false; window.backgroundColor = .clear
         window.hidesOnDeactivate = false
         window.contentView = ArqmeterHostingView(rootView: DashboardView(model: dashboard,
-            sourcePreferences: preferences, sourcesModel: sourceModel, sourceConnection: connection))
+            sourcePreferences: preferences, sourcesModel: sourceModel))
         window.center()
         let close = Timer.scheduledTimer(withTimeInterval: 240, repeats: false) { _ in
             MainActor.assumeIsolated { application.stop(nil) }
@@ -70,7 +68,6 @@ import ArqmeterCore
         }
         defer {
             close.invalidate(); dashboard.stopAllLive()
-            connection.stop()
             window.contentView = nil; window.close()
         }
         DispatchQueue.main.async {

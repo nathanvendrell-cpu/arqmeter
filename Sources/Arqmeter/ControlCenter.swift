@@ -1197,7 +1197,6 @@ private struct SourceCoverageSheet: View {
 
 struct SourceSettingsView: View {
     @ObservedObject var preferences: SourceDisplayPreferences
-    var connection: ClaudeOfficialPage = .shared
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -1223,8 +1222,7 @@ struct SourceSettingsView: View {
                 .buttonStyle(.borderless)
             }
             Divider()
-            ClaudeDesktopConnectionControls()
-            ClaudeOfficialConnectionControls(connection: connection)
+            ClaudeCodeQuotaControls()
             Picker("Source principale des détails", selection: Binding(
                 get: { preferences.primaryID },
                 set: { preferences.setPrimary($0) })) {

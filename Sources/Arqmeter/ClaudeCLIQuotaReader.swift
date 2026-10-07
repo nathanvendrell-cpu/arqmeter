@@ -205,11 +205,10 @@ private enum ClaudeCLICollector {
     private var policy: ClaudeCLIRefreshPolicy
     private let stateURL = ClaudeQuotaReport.cacheURL.deletingLastPathComponent().appendingPathComponent("claude-cli-reader-state.json")
     var selected: Bool {
-        !UserDefaults.standard.bool(forKey: ClaudeWebQuotaReport.selectedKey)
-        && !UserDefaults.standard.bool(forKey: ClaudeDesktopQuotaReport.selectedKey)
-        && SourceDisplayPreferences.shared.visibleIDs.contains("claude-code")
+        SourceDisplayPreferences.shared.visibleIDs.contains("claude-code")
     }
-    var compactState: String { policy.failure == .limited ? "!" : policy.failure == .authentication ? "?" : "…" }
+    var nextAttemptAt: Date? { policy.nextAttemptAt }
+    var compactState: String { busy ? "…" : policy.failure == .limited ? "!" : policy.failure == .authentication ? "?" : "—" }
     init() {
         let url = ClaudeQuotaReport.cacheURL.deletingLastPathComponent().appendingPathComponent("claude-cli-reader-state.json")
         if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 4096,
@@ -226,8 +225,9 @@ private enum ClaudeCLICollector {
         if waitForCleanup { queue.sync {} }
         busy = false
     }
-    private func schedule() {
-        guard selected, policy.failure != .cleanup, let next = policy.nextAttemptAt else { return }
+    private func schedule(notBefore: Date? = nil) {
+        guard selected, policy.failure != .cleanup else { return }
+        let next = max(policy.nextAttemptAt ?? .distantPast, notBefore ?? .distantPast)
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: max(1, next.timeIntervalSinceNow), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
@@ -235,6 +235,11 @@ private enum ClaudeCLICollector {
     }
     func refresh() {
         guard selected, !busy, policy.failure != .cleanup else { return }
+        if let passive = ClaudeQuotaReport.read(), passive.current(at: Date()) != nil {
+            state = "Claude Code · relevé reçu automatiquement à \(passive.receivedAt.formatted(.dateTime.hour().minute().second()))"
+            // Do not clear a persisted server refusal or renew passive freshness.
+            schedule(notBefore: passive.receivedAt.addingTimeInterval(180)); return
+        }
         guard policy.permits(at: Date()) else { schedule(); return }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let paths = [home.appendingPathComponent(".local/bin/claude"), URL(fileURLWithPath: "/opt/homebrew/bin/claude"), URL(fileURLWithPath: "/usr/local/bin/claude")]
@@ -246,12 +251,12 @@ private enum ClaudeCLICollector {
         state = "Lecture du quota officiel Claude Code…"
         let token = generation, cancellation = ClaudeProbeCancellation(); self.cancellation = cancellation
         queue.async { [weak self] in
-            var diagnostic = ClaudeCLICollector.Diagnostic()
-            let result = ClaudeCLICollector.read(executable: executable, directory: directory, cancellation: cancellation,
+            var diagnostic = ClaudeUsageControlReader.Diagnostic()
+            let result = ClaudeUsageControlReader.read(executable: executable, directory: directory, cancelled: { cancellation.cancelled },
                 onDiagnostic: { diagnostic = $0 })
             // Operational metadata only: no terminal frame, path, transcript or identity.
-            // Records cleanup and first-launch setup in the normal installed reader.
-            struct Receipt: Encodable { let observedAt: Date; let transport: ClaudeCLICollector.Diagnostic }
+            // Records control-exchange metadata and cleanup, never account identities.
+            struct Receipt: Encodable { let observedAt: Date; let transport: ClaudeUsageControlReader.Diagnostic }
             let diagnosticURL = directory.deletingLastPathComponent().appendingPathComponent("claude-cli-last-reader-diagnostic.json")
             if let data = try? JSONEncoder().encode(Receipt(observedAt: Date(), transport: diagnostic)), data.count <= 4096 {
                 try? data.write(to: diagnosticURL, options: .atomic)
