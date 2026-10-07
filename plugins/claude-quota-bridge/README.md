@@ -1,13 +1,20 @@
 # Pont quota Claude Code
 
-Ce mod observe les événements officiels `session.measure` contenant un changement
-de `rateLimits`. Il transmet uniquement les fenêtres 5 h et 7 jours au binaire
+Ce mod observe les événements officiels `session.measure` contenant des fenêtres
+de quota valides. Le champ `changed` décrit les valeurs qui ont changé : ce n'est
+pas la liste des champs disponibles. Les quotas restent donc lus lorsque seul
+le contexte ou le coût a changé. Il transmet uniquement les fenêtres 5 h et 7 jours au binaire
 Arqmeter installé dans `$HOME/Applications/Arqmeter.app`.
 
 Aucune requête modèle ou HTTP, aucun accès aux credentials, conversations ou
-transcripts. Deux processus courts et bornés par changement de quota : vérifier
+transcripts. Deux processus courts et bornés par livraison : vérifier
 la capacité du binaire, puis importer les seules mesures reconnues. Les erreurs
 ne bloquent pas la session Claude. Les quotas ne sont jamais estimés.
+
+Un changement de quota est transmis immédiatement. Deux relevés identiques dans
+une même session sont regroupés pendant 60 secondes, pas ignorés indéfiniment.
+Un nouvel événement réel est nécessaire pour renouveler un reçu : aucun timer
+ne réécrit un ancien chiffre en lui attribuant une fausse fraîcheur serveur.
 
 ## Installer
 
@@ -33,6 +40,12 @@ ne prétend pas à une mesure fraîche : après trois minutes, les derniers chif
 restent accompagnés d'une horloge et de « Dernier relevé · non actualisé » dans
 le détail. Chaque valeur est invalidée à son reset connu. Aucune activité Claude
 n'est déclenchée pour renouveler les chiffres.
+
+Ces événements portent les limites connues du moteur, issues de sa dernière
+réponse API ; ils ne constituent pas un flux serveur continu. Une consultation
+de `/usage` peut donc montrer un relevé plus récent sans produire un événement
+`session.measure`. Le pont ne copie pas cette interface et ne transforme jamais
+un ancien relevé en nouvelle mesure serveur.
 
 ## Vérifier et désactiver
 

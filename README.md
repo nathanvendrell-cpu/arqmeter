@@ -41,9 +41,12 @@ existants : pas de nouvel appel modèle ni de minuterie de collecte supplémenta
 ### Claude : réception passive et dernier relevé explicite
 
 Le [pont Claude Code Mods](plugins/claude-quota-bridge/README.md) reçoit les
-changements officiels de quota pendant l'activité normale de Claude Code,
+mesures officielles de quota pendant l'activité normale de Claude Code,
 y compris l'onglet Code de Claude Desktop. Il ne fait aucune requête modèle,
 aucune requête HTTP et ne modifie pas votre status line.
+Le pont 0.1.1 ne filtre plus les mesures sur le seul champ `changed=rateLimits` :
+un nouvel événement réel contenant les mêmes pourcentages peut renouveler la
+réception après 60 secondes, sans minuteur qui recyclerait un vieux relevé.
 
 Les chiffres de la barre sont les pourcentages **restants**. Après trois minutes
 sans nouvelle réception, ils restent visibles avec une horloge : **dernier relevé,
@@ -99,7 +102,7 @@ de données. Ne pas lancer plusieurs copies simultanément.
 Validation : tests moteur, autotests du binaire, tests du pont et signature ad hoc
 sont distincts d'une observation native et d'une acceptation visuelle. Les tests
 utilisent des exemples construits ; aucun reçu de compte réel n'est publié.
-La passe 1.0.20 couvre 192 tests Swift, 7 tests du mod et les contrôles hors réseau
+La passe 1.0.20 couvre 192 tests Swift, 10 tests du mod et les contrôles hors réseau
 de présentation, cadrans, statistiques, comparaison, quota, barre et extracteur DOM.
 La recette d'analyse vérifie aussi la sélection de source, mesure et dossier,
 les réponses asynchrones dépassées et les états vides, sans requête de compte réel.

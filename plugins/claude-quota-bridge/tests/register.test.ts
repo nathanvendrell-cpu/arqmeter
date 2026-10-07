@@ -20,9 +20,11 @@ describe('register', () => {
       seven_day: { used_percentage: 40, resets_at: Date.parse(reset) / 1000 },
     } })
   })
-  test('absent quota and context-only events do not become 100 percent', async () => {
+  test('absent quota never becomes 100 percent; a changed unit is not a field filter', async () => {
     expect(quotaInput(measure([]), now)).toBeNull()
-    expect(quotaInput(measure([window()], ['context']), now)).toBeNull()
+    expect(quotaInput(measure([], ['context']), now)).toBeNull()
+    expect(quotaInput(measure([window()], ['context']), now)?.rate_limits.five_hour.used_percentage).toBe(23.5)
+    expect(quotaInput(measure([window()], []), now)).toBeNull()
     expect(quotaInput({ context: { percent: 42 }, changed: ['rateLimits'] }, now)).toBeNull()
   })
   test('rejects invalid, expired, duplicated or unsupported windows independently', async () => {
@@ -62,11 +64,11 @@ describe('register', () => {
     expect(receipt.source).toContain('session.measure')
     expect(receipt.serverObservedAt).toBeNull()
   })
-  test('no process for unknown quota or context-only changes', async ($, on) => {
+  test('no process for measurements that contain no quota', async ($, on) => {
     mock.clock(on, { now })
     on('session.measure', ($, e) => ({ changed: e.changed }))
     await $.session.measure(measure([]) as any)
-    await $.session.measure(measure([window()], ['context']) as any)
+    await $.session.measure(measure([], ['context']) as any)
     // Any unexpected process, model, filesystem or auth call fails the engine test.
   })
   test('a rollback without the capability is not executed', async ($, on) => {
@@ -88,5 +90,52 @@ describe('register', () => {
     expect(await $.session.measure(event as any)).toEqual({ changed: ['rateLimits'] })
     await $.session.measure(event as any)
     expect(count).toBe(2)
+  })
+  test('unchanged percentages refresh only after a new engine event, with bounded burst coalescing', async ($, on) => {
+    let clock = now
+    on('clock.now', () => ({ value: clock }))
+    mock.env(on, { HOME: '/test-user' })
+    let calls = 0
+    let receipts: any[] = []
+    on('store.set', ($, e) => { receipts.push(e.value); return { value: undefined } })
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    on('process.run', ($, e) => {
+      calls++
+      return { value: { exitCode: 0, stdout: e.argv[0] === '/usr/libexec/PlistBuddy' ? 'true\n' : '', stderr: '' } }
+    })
+    const event = measure([window(), window('seven_day', 40)], ['context'])
+    await $.session.measure(event as any)
+    clock += 59_999
+    await $.session.measure(event as any)
+    expect(calls).toBe(2)
+    expect(receipts.length).toBe(1)
+    clock += 1
+    await $.session.measure(event as any)
+    expect(calls).toBe(4)
+    expect(receipts.length).toBe(2)
+    expect(receipts[1].receivedAt).toBe(new Date(clock).toISOString())
+    expect(receipts[1].serverObservedAt).toBeNull()
+    clock += 180_000 // A clock advancing alone must not write a receipt.
+    expect(receipts.length).toBe(2)
+  })
+  test('changed quota is delivered immediately even inside the coalescing interval', async ($, on) => {
+    mock.clock(on, { now })
+    mock.env(on, { HOME: '/test-user' })
+    let calls = 0
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    on('process.run', ($, e) => {
+      calls++
+      return { value: { exitCode: 0, stdout: e.argv[0] === '/usr/libexec/PlistBuddy' ? 'true\n' : '', stderr: '' } }
+    })
+    await $.session.measure(measure([window()]) as any)
+    await $.session.measure(measure([window('five_hour', 24)], ['cost']) as any)
+    expect(calls).toBe(4)
+  })
+  test('exhausted session is a real 100 percent used, not an absent quota or a weekly substitute', () => {
+    expect(quotaInput(measure([window('five_hour', 100), window('seven_day', 81)]), now)).toEqual({ rate_limits: {
+      five_hour: { used_percentage: 100, resets_at: Date.parse(reset) / 1000 },
+      seven_day: { used_percentage: 81, resets_at: Date.parse(reset) / 1000 },
+    } })
+    expect(quotaInput(measure([window('seven_day', 81)]), now)?.rate_limits.five_hour).toBeUndefined()
   })
 })

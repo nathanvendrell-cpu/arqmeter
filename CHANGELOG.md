@@ -1,5 +1,19 @@
 # Changements
 
+## Pont Claude 0.1.1 — 2026-10-07 — sources
+
+- Correction d'un filtre de réception : `changed` indique quelles valeurs ont
+  changé, pas quelles mesures sont présentes. Les quotas fournis dans un relevé
+  après tour ne sont plus ignorés lorsque seul contexte/coût a changé.
+- Relevés identiques regroupés pendant 60 s, au lieu d'une déduplication sans
+  expiration. Chiffres différents transmis immédiatement ; renouvellement
+  uniquement sur un nouvel événement réel, jamais sur une simple horloge.
+- Trois tests supplémentaires : quota identique après intervalle, absence de
+  renouvellement sans événement, changement immédiat et session épuisée non
+  remplacée par la fenêtre hebdomadaire.
+- Binaire 1.0.20, UI, bases et préférences inchangés. Rechargement du mod requis
+  pour les sessions Claude Code déjà ouvertes ; pas de réponse IA déclenchée.
+
 ## 1.0.20 — 2026-10-07 — sources
 
 - La vue complète ouvre l'analyse quotidienne : semaine civile ou mois,
