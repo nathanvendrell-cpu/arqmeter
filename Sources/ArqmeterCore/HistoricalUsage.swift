@@ -5,18 +5,21 @@ public struct HistoricalSource: Sendable {
     public let harnessID: String
     public let root: URL
     public let historyRoot: URL?
+    public let antigravityBrainRoot: URL?
 
-    public init(harnessID: String, root: URL, historyRoot: URL? = nil) {
+    public init(harnessID: String, root: URL, historyRoot: URL? = nil, antigravityBrainRoot: URL? = nil) {
         self.harnessID = harnessID
         self.root = root
         self.historyRoot = historyRoot
+        self.antigravityBrainRoot = antigravityBrainRoot
     }
 
     public static func defaults(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [Self] {
         [Self(harnessID: "codex", root: home.appendingPathComponent(".codex/sessions")),
          Self(harnessID: "claude-code", root: home.appendingPathComponent(".claude/projects")),
          Self(harnessID: "gemini-cli", root: home.appendingPathComponent(".gemini/tmp"),
-              historyRoot: home.appendingPathComponent(".gemini/history")),
+              historyRoot: home.appendingPathComponent(".gemini/history"),
+              antigravityBrainRoot: home.appendingPathComponent(".gemini/antigravity/brain")),
          Self(harnessID: "ollama", root: home.appendingPathComponent(".ollama/logs"))]
     }
 }
@@ -457,10 +460,11 @@ fileprivate struct ParserState: Codable {
     var lastObservedSize: UInt64?
     var lastObservedModificationDate: Date?
     var needsCatchUp = false
+    var antigravityParserRevision: Int?
 
     private enum CodingKeys: String, CodingKey {
         case sessionID, projectPath, providerID, modelID, lastCumulative, occurrences, skipUntilNewline,
-             lastObservedSize, lastObservedModificationDate, needsCatchUp
+             lastObservedSize, lastObservedModificationDate, needsCatchUp, antigravityParserRevision
     }
 
     init() {}
@@ -477,6 +481,7 @@ fileprivate struct ParserState: Codable {
         lastObservedSize = try box.decodeIfPresent(UInt64.self, forKey: .lastObservedSize)
         lastObservedModificationDate = try box.decodeIfPresent(Date.self, forKey: .lastObservedModificationDate)
         needsCatchUp = try box.decodeIfPresent(Bool.self, forKey: .needsCatchUp) ?? false
+        antigravityParserRevision = try box.decodeIfPresent(Int.self, forKey: .antigravityParserRevision)
     }
 }
 
@@ -597,16 +602,72 @@ public final class HistoricalUsageEngine {
             readFailures: failures, pendingRecentWork: pending)
     }
 
-    private func scan(_ source: HistoricalSource, now: Date) throws -> HistoricalScanResult {
-        let manager = FileManager.default
-        guard manager.isReadableFile(atPath: source.root.path) else {
-            try store.recordScan(harness: source.harnessID, at: now, complete: false,
-                                 inventoriedSince: nil, diagnostic: "Source absente ou illisible")
-            return HistoricalScanResult(harnessID: source.harnessID, filesScanned: 0, recordsRead: 0,
-                                        complete: false, diagnostic: "Source absente ou illisible")
+    public func scanRecentGemini(now: Date = Date()) throws -> HistoricalScanResult {
+        guard let source = sources.first(where: { $0.harnessID == "gemini-cli" }),
+              isSourceReadable(source) else {
+            return HistoricalScanResult(harnessID: "gemini-cli", filesScanned: 0,
+                recordsRead: 0, complete: false, diagnostic: "Source absente ou illisible",
+                pendingRecentWork: true)
         }
+        let candidates = candidateFiles(for: source)
+            .compactMap { file -> (URL, Date)? in
+                guard let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                      modified >= now.addingTimeInterval(-recentClaudeFileAge) else { return nil }
+                return (file, modified)
+            }
+            .sorted { $0.1 == $1.1 ? $0.0.path < $1.0.path : $0.1 > $1.1 }
+        var changed: [URL] = []
+        var pendingUnterminated = 0, failures = 0
+        for (file, _) in candidates {
+            do {
+                let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+                guard let size = (attributes[.size] as? NSNumber)?.uint64Value,
+                      let inode = (attributes[.systemFileNumber] as? NSNumber)?.stringValue,
+                      let modified = attributes[.modificationDate] as? Date else {
+                    failures += 1
+                    continue
+                }
+                let previous = try store.checkpoint(harness: source.harnessID, path: file.path)
+                let delta = previous == nil || previous!.inode != inode || previous!.offset > size ||
+                    (file.lastPathComponent == "transcript.jsonl" && previous!.state.antigravityParserRevision != 1) ||
+                    previous!.state.needsCatchUp ||
+                    previous!.state.lastObservedSize != size ||
+                    previous!.state.lastObservedModificationDate != modified
+                if delta { changed.append(file) }
+                else if previous!.offset < size { pendingUnterminated += 1 }
+            } catch { failures += 1 }
+        }
+        var budget = max(0, recentClaudeMaxBytes)
+        var scanned = 0, count = 0, pendingBytes = 0
+        for file in changed.prefix(max(0, recentClaudeMaxFiles)) where budget > 0 {
+            do {
+                let result = try scanFile(file, source: source, now: now,
+                    budget: min(budget, max(1, recentClaudeMaxBytesPerFile)),
+                    rescanSameSizeChange: true)
+                budget -= result.bytesRead
+                count += result.recordsRead
+                scanned += 1
+                if result.pendingBytes { pendingBytes += 1 }
+            } catch { failures += 1 }
+        }
+        let limited = changed.count > scanned
+        let pending = limited || pendingBytes > 0 || pendingUnterminated > 0 || failures > 0
+        return HistoricalScanResult(harnessID: source.harnessID, filesScanned: scanned,
+            recordsRead: count, complete: false,
+            diagnostic: "Passe récente bornée · couverture historique inchangée\(pending ? " · import en attente" : "")\(failures > 0 ? " · \(failures) erreur(s)" : "")",
+            readFailures: failures, pendingRecentWork: pending)
+    }
+
+    private func isSourceReadable(_ source: HistoricalSource) -> Bool {
+        let manager = FileManager.default
+        if manager.isReadableFile(atPath: source.root.path) { return true }
+        if let brain = source.antigravityBrainRoot, manager.isReadableFile(atPath: brain.path) { return true }
+        return false
+    }
+
+    private func candidateFiles(for source: HistoricalSource) -> [URL] {
         let ext = source.harnessID == "ollama" ? "log" : "jsonl"
-        let all = UsageFiles.files(in: source.root, extension: ext, recursive: source.harnessID != "ollama")
+        var files = UsageFiles.files(in: source.root, extension: ext, recursive: source.harnessID != "ollama")
             .filter { file in
                 switch source.harnessID {
                 case "codex": return file.lastPathComponent.hasPrefix("rollout-")
@@ -615,6 +676,20 @@ public final class HistoricalUsageEngine {
                 default: return true
                 }
             }
+        if source.harnessID == "gemini-cli", let brain = source.antigravityBrainRoot {
+            files.append(contentsOf: UsageFiles.antigravityTranscriptFiles(in: brain))
+        }
+        return files
+    }
+
+    private func scan(_ source: HistoricalSource, now: Date) throws -> HistoricalScanResult {
+        guard isSourceReadable(source) else {
+            try store.recordScan(harness: source.harnessID, at: now, complete: false,
+                                 inventoriedSince: nil, diagnostic: "Source absente ou illisible")
+            return HistoricalScanResult(harnessID: source.harnessID, filesScanned: 0, recordsRead: 0,
+                                        complete: false, diagnostic: "Source absente ou illisible")
+        }
+        let all = candidateFiles(for: source)
             .sorted {
                 let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
@@ -655,12 +730,17 @@ public final class HistoricalUsageEngine {
         }
         let previous = try store.checkpoint(harness: source.harnessID, path: file.path)
         let modified = attributes[.modificationDate] as? Date
+        // One bounded replay repairs model attribution from the unfinished
+        // Antigravity importer. Stable event IDs upsert, never delete history.
+        let antigravity = source.harnessID == "gemini-cli" && file.lastPathComponent == "transcript.jsonl"
+        let parserUpgrade = antigravity && previous != nil && previous!.state.antigravityParserRevision != 1
         let sameSizeChange = rescanSameSizeChange && previous != nil &&
             previous!.offset == size && previous!.state.lastObservedSize == size &&
             previous!.state.lastObservedModificationDate != modified
-        let rotated = previous != nil && (previous!.inode != inode || previous!.offset > size || sameSizeChange)
+        let rotated = previous != nil && (previous!.inode != inode || previous!.offset > size || sameSizeChange || parserUpgrade)
         let start: UInt64
-        if let previous, !rotated { start = previous.offset }
+        if parserUpgrade { start = 0 }
+        else if let previous, !rotated { start = previous.offset }
         else { start = size > UInt64(bootstrapTailBytes) ? size - UInt64(bootstrapTailBytes) : 0 }
         var state = rotated ? ParserState() : previous?.state ?? ParserState()
         if previous == nil || rotated { seedMetadata(file: file, source: source, state: &state) }
@@ -709,6 +789,7 @@ public final class HistoricalUsageEngine {
         state.lastObservedSize = size
         state.lastObservedModificationDate = modified
         state.needsCatchUp = start + UInt64(consumed) < size
+        if antigravity { state.antigravityParserRevision = 1 }
         let checkpoint = FileCheckpoint(inode: inode, offset: lastComplete,
             trackingSince: previous?.trackingSince ?? now, lastScan: now, gap: gap, state: state)
         try store.commit(records: records, checkpoint: checkpoint, harness: source.harnessID, path: file.path)

@@ -4,7 +4,7 @@ Un centre de pilotage macOS pour la consommation observée de Codex, Claude Code
 Gemini CLI et Ollama. Les sources restent séparées : les tokens ne sont pas un
 quota, et un ancien journal n'est pas une session en cours.
 
-## Sources 1.0.25
+## Sources 1.0.26
 
 - Fenêtre historique de 420 × 650 points, ouverte directement depuis la barre
   de menus. Un nouveau clic la masque ou la rouvre ; déplacement par l'en-tête.
@@ -21,6 +21,11 @@ quota, et un ancien journal n'est pas une session en cours.
 - Projets regroupés avec choix de période : 1 min, 10 min, 1 h, 24 h, 7 j et 30 j.
   Le suivi Claude récent relit les journaux locaux disponibles de Claude Code,
   y compris l’onglet Code de Claude Desktop, sans fabriquer les mesures absentes.
+- Gemini / Antigravity : quota du modèle reçu par le LanguageServer local,
+  reset rapporté, fraîcheur explicite et largeur stable dans la barre de menus.
+  Les transcriptions locales alimentent les compteurs par période et l’historique
+  dédupliqué. Modèle, projet ou durée de fenêtre non fournis restent inconnus ;
+  un reset seul ne devient jamais un quota nul. Aucun appel de génération.
 
 ### Analyse quotidienne dans la vue complète
 
@@ -120,7 +125,7 @@ de données. Ne pas lancer plusieurs copies simultanément.
 Validation : tests moteur, autotests du binaire, tests du pont et signature ad hoc
 sont distincts d'une observation native et d'une acceptation visuelle. Les tests
 utilisent des exemples construits ; aucun reçu de compte réel n'est publié.
-La suite 1.0.25 couvre 226 tests Swift, les tests du mod et les contrôles hors réseau
+La suite 1.0.26 couvre 232 tests Swift, les tests du mod et les contrôles hors réseau
 de présentation, cadrans, statistiques, comparaison, quota, barre et extracteur DOM.
 La recette d'analyse vérifie aussi la sélection de source, mesure et dossier,
 les réponses asynchrones dépassées et les états vides, sans requête de compte réel.

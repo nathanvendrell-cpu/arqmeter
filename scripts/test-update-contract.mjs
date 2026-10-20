@@ -6,7 +6,7 @@ import os from 'node:os';
 import { generateKeyPairSync, sign, randomUUID } from 'node:crypto';
 import { schemaVersion, states, UpdateError, sha256, httpsURL, validateRelease,
   evaluateRelease, verifyArchive, verifyReleaseMetadata, validateStatus } from './update-contract.mjs';
-import { validateBundleInfo, prepare, run, toolHashes } from './prepare-sparkle-release.mjs';
+import { validateBundleInfo, signerArguments, prepare, run, toolHashes, keyToolHash } from './prepare-sparkle-release.mjs';
 
 function fixture() {
   const keys = generateKeyPairSync('ed25519');
@@ -102,6 +102,32 @@ test('publisher requires signed-feed configuration, key, known host and increasi
 });
 test('preparation with missing arguments does not invoke a signing tool or create output', async () => {
   let calls=0;await assert.rejects(prepare({},async()=>{calls++;}),error=>error.code==='configurationMissing');assert.equal(calls,0);
+});
+test('explicit Keychain account never exports a key or falls back to an implicit account', () => {
+  assert.deepEqual(signerArguments({keychainAccount:'arqmeter'},'/project','/app'),['--account','arqmeter']);
+  rejected(()=>signerArguments({},'/project','/app'),'configurationMissing');
+  rejected(()=>signerArguments({keychainAccount:'arqmeter',keyFile:'/file'},'/project','/app'),'configurationMissing');
+  for(const value of ['--ed-key-file secret','a','account\nsecret',{},'x'.repeat(129)])
+    rejected(()=>signerArguments({keychainAccount:value},'/project','/app'),'configurationMissing');
+  assert.match(keyToolHash,/^[a-f0-9]{64}$/);
+});
+test('ad hoc signing is refused in Keychain mode before any Keychain tool is invoked', async () => {
+  const directory=fs.mkdtempSync(path.resolve('Products.noindex/.keychain-preflight-fixture-'));
+  const app=path.join(directory,'Fixture.app'),output=path.join(directory,'release');
+  fs.mkdirSync(path.join(app,'Contents'),{recursive:true});fs.writeFileSync(path.join(app,'Contents/Info.plist'),'fixture');
+  const calls=[];
+  const execute=async(command,args)=>{
+    calls.push(path.basename(command));
+    if(command==='/usr/bin/plutil')return JSON.stringify(info(fixture().key));
+    if(command==='/usr/bin/codesign')return args[0]==='-dvv' ? 'Signature=adhoc\nTeamIdentifier=not set' : '';
+    assert.fail('No Keychain or later tool may run after an ad hoc identity');
+  };
+  try {
+    await assert.rejects(prepare({app,output,tools:'unused',keychainAccount:'arqmeter',
+      installedBuild:'20261020.25',downloadPrefix:'https://github.com/example/fixture/releases/download/v2/'},execute),
+      error=>error.code==='signingUnavailable');
+    assert.equal(fs.existsSync(output),false);assert.deepEqual(calls,['plutil','codesign','codesign']);
+  } finally {fs.rmSync(directory,{recursive:true});}
 });
 test('publisher refuses ad hoc signing before reading a private key or creating output', async () => {
   const directory=fs.mkdtempSync(path.resolve('Products.noindex/.preflight-fixture-'));

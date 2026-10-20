@@ -12,7 +12,22 @@ export const toolHashes = Object.freeze({
   sign_update: '43c249771bafc3aa581228abae00731a012d324691b8292860896635050be76b',
   generate_appcast: '59e48e8432433cf4358519027e67e2c66a7348e0fe415f75f67b3b2372c13844',
 });
+export const keyToolHash = 'c37679f98d9121981cf7b2d18592fdc8b44931bffa604acf10c9e11791b6222e';
 const requireValue = (value, code) => { if (!value) throw new UpdateError(code); };
+export function signerArguments({keyFile, keychainAccount}, root, appPath) {
+  requireValue(Boolean(keyFile) !== Boolean(keychainAccount), 'configurationMissing');
+  if (keychainAccount) {
+    requireValue(typeof keychainAccount === 'string' && /^[A-Za-z0-9._-]{3,128}$/.test(keychainAccount), 'configurationMissing');
+    // Explicit account only. No implicit global Keychain lookup, key creation,
+    // export, import, password argument or environment-carried secret.
+    return ['--account', keychainAccount];
+  }
+  const keyPath=fs.realpathSync(keyFile), keyStat=fs.lstatSync(keyFile);
+  requireValue(keyStat.isFile() && keyStat.uid === process.getuid() &&
+    (keyStat.mode & 0o077) === 0 && !keyPath.startsWith(root + path.sep) &&
+    !keyPath.startsWith(appPath + path.sep), 'configurationMissing');
+  return ['--ed-key-file', keyPath];
+}
 // Dedicated process groups: timeout/interruption kills only children started by
 // this invocation, including generator extraction helpers. No shell/key output.
 export async function run(command, args, timeout = 60000) {
@@ -66,8 +81,8 @@ export function validateBundleInfo(info, downloadPrefix, installedBuild, channel
   return {feed, key, hosts, prefix};
 }
 export async function prepare(options, execute = run) {
-  const {app, tools, keyFile, output, downloadPrefix, installedBuild, channel = 'stable'} = options;
-  requireValue(app && tools && keyFile && output && downloadPrefix && installedBuild, 'configurationMissing');
+  const {app, tools, keyFile, keychainAccount, output, downloadPrefix, installedBuild, channel = 'stable'} = options;
+  requireValue(app && tools && (Boolean(keyFile) !== Boolean(keychainAccount)) && output && downloadPrefix && installedBuild, 'configurationMissing');
   const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
   const appPath = fs.realpathSync(app), outputPath = path.resolve(output);
   requireValue(appPath.endsWith('.app') && path.basename(appPath).match(/^[A-Za-z0-9_-]+\.app$/), 'configurationMissing');
@@ -83,14 +98,17 @@ export async function prepare(options, execute = run) {
   requireValue(/Authority=Developer ID Application:/.test(signature) && /TeamIdentifier=[A-Z0-9]{10}\b/.test(signature), 'signingUnavailable');
   await execute('/usr/sbin/spctl', ['--assess', '--type', 'execute', appPath]);
   await execute('/usr/bin/xcrun', ['stapler', 'validate', appPath]);
-  // Explicit external file only; never fall back to Keychain, environment key
-  // contents, command-line secrets, generated production credentials or test mode.
-  const keyPath = fs.realpathSync(keyFile), keyStat = fs.lstatSync(keyFile);
-  requireValue(keyStat.isFile() && keyStat.uid === process.getuid() &&
-    (keyStat.mode & 0o077) === 0 && !keyPath.startsWith(root + path.sep) &&
-    !keyPath.startsWith(appPath + path.sep), 'configurationMissing');
+  const signer=signerArguments({keyFile,keychainAccount},root,appPath);
   for (const [name, expected] of Object.entries(toolHashes)) {
     requireValue(sha256(fs.readFileSync(path.join(tools, name))) === expected, 'signingUnavailable');
+  }
+  if (keychainAccount) {
+    const keyTool=path.join(tools,'generate_keys');
+    requireValue(sha256(fs.readFileSync(keyTool)) === keyToolHash, 'signingUnavailable');
+    // -p is lookup-only in the pinned official tool. It fails on a missing
+    // account and never creates or exports a private key. Only public output.
+    const existingPublicKey=await execute(keyTool,['--account',keychainAccount,'-p']);
+    requireValue(existingPublicKey === info.SUPublicEDKey, 'signingUnavailable');
   }
   const executable = path.join(appPath, 'Contents/MacOS', info.CFBundleExecutable);
   const slices = (await execute('/usr/bin/lipo', ['-archs', executable])).split(/\s+/).sort();
@@ -102,7 +120,7 @@ export async function prepare(options, execute = run) {
     const filename = `${path.basename(appPath, '.app')}-${info.CFBundleShortVersionString}-${architecture}.zip`;
     const archive = path.join(outputPath, filename);
     await execute('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, archive]);
-    const value = await execute(path.join(tools, 'sign_update'), ['--ed-key-file', keyPath, '-p', archive]);
+    const value = await execute(path.join(tools, 'sign_update'), [...signer, '-p', archive]);
     const bytes = fs.readFileSync(archive);
     const record = {schemaVersion, productID: info.CFBundleIdentifier,
       version: info.CFBundleShortVersionString, build: info.CFBundleVersion, platform: 'macos',
@@ -125,7 +143,7 @@ export async function prepare(options, execute = run) {
     await execute('/usr/sbin/spctl', ['--assess', '--type', 'execute', archivedApp]);
     await execute('/usr/bin/xcrun', ['stapler', 'validate', archivedApp]);
     fs.rmSync(validation, {recursive:true});
-    const args = ['--ed-key-file', keyPath, '--download-url-prefix', configuration.prefix.href,
+    const args = [...signer, '--download-url-prefix', configuration.prefix.href,
       '--maximum-deltas', '0', '--maximum-versions', '2', '--versions', info.CFBundleVersion];
     if (channel === 'prerelease') args.push('--channel', 'prerelease');
     const cachePath = path.join(os.homedir(), 'Library/Caches/Sparkle_generate_appcast', record.artifact.sha256);
@@ -133,7 +151,7 @@ export async function prepare(options, execute = run) {
     if (!fs.existsSync(cachePath)) newGeneratorCache = cachePath;
     await execute(path.join(tools, 'generate_appcast'), [...args, outputPath]);
     const feedPath = path.join(outputPath, path.basename(configuration.feed.pathname));
-    await execute(path.join(tools, 'sign_update'), ['--ed-key-file', keyPath, '--verify', feedPath]);
+    await execute(path.join(tools, 'sign_update'), [...signer, '--verify', feedPath]);
     const xpath = async expression => await execute('/usr/bin/xmllint', ['--nonet', '--xpath', expression, feedPath]);
     requireValue(await xpath('count(/rss/channel/item)') === '1', 'invalidFeed');
     requireValue(await xpath('string(/rss/channel/item/enclosure/@url)') === record.artifact.url &&
@@ -145,7 +163,7 @@ export async function prepare(options, execute = run) {
     // the same trusted key and exact archive. Never trust the JSON alone.
     const manifestPath=path.join(outputPath,'release.json');
     fs.writeFileSync(manifestPath, JSON.stringify(record, null, 2) + '\n', {flag:'wx'});
-    const manifestSignature=await execute(path.join(tools,'sign_update'),['--ed-key-file',keyPath,'-p',manifestPath]);
+    const manifestSignature=await execute(path.join(tools,'sign_update'),[...signer,'-p',manifestPath]);
     verifyReleaseMetadata(fs.readFileSync(manifestPath),manifestSignature,configuration.key,configuration.hosts);
     fs.writeFileSync(path.join(outputPath,'release.json.ed25519'),manifestSignature+'\n',{flag:'wx'});
     fs.writeFileSync(path.join(outputPath, 'preparation.json'), JSON.stringify({
@@ -167,7 +185,7 @@ export async function prepare(options, execute = run) {
   }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const names = {'--app':'app','--tools':'tools','--key-file':'keyFile','--output':'output',
+  const names = {'--app':'app','--tools':'tools','--key-file':'keyFile','--keychain-account':'keychainAccount','--output':'output',
     '--download-prefix':'downloadPrefix','--installed-build':'installedBuild','--channel':'channel'};
   const options = {};
   try {

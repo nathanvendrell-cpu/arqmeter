@@ -151,6 +151,12 @@ struct StatusPopoverView: View {
     }
 
     private func quotaText(_ id: String) -> String {
+        if id == "gemini-cli" {
+            if let win = dashboard.geminiQuotaSnapshot?.readout?.primaryWindow {
+                return "\(win.remainingPercent) % restants"
+            }
+            return "Quota en attente"
+        }
         guard id == "codex" else { return "Quota non fourni" }
         guard dashboard.officialSampledAt != nil else { return "Quota indisponible" }
         guard quotaFresh, let percent = dashboard.remainingPercent else { return "Mesure périmée" }
@@ -264,6 +270,7 @@ struct ControlCenterView: View {
         }
         .onDisappear {
             dashboard.setRecentClaudeVisible(false, for: recentClaudeConsumer)
+            dashboard.setRecentGeminiVisible(false, for: recentClaudeConsumer)
             if onBack == nil { dashboard.stopLive(for: "control") }
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         }
@@ -298,14 +305,18 @@ struct ControlCenterView: View {
         // The paired simple overview needs the same Codex local reader already
         // used by detailed mode; startLive is idempotent for this consumer.
         if readingMode != "simple" || sourcePreferences.showsCodexAndClaude ||
-           sourcePreferences.selectedHistoryID == "claude-code" {
+           sourcePreferences.selectedHistoryID == "claude-code" ||
+           sourcePreferences.selectedHistoryID == "gemini-cli" ||
+           sourcePreferences.visibleIDs.contains("gemini-cli") {
             dashboard.startLive(for: "control")
         } else {
             dashboard.stopLive(for: "control")
         }
-        let showsClaude = sourcePreferences.selectedHistoryID == "claude-code" &&
-            (readingMode == "simple" || product.selectedSection == ProductSection.control.rawValue)
+        let inOverview = readingMode == "simple" || product.selectedSection == ProductSection.control.rawValue
+        let showsClaude = sourcePreferences.selectedHistoryID == "claude-code" && inOverview
+        let showsGemini = (sourcePreferences.visibleIDs.contains("gemini-cli") || sourcePreferences.selectedHistoryID == "gemini-cli") && inOverview
         dashboard.setRecentClaudeVisible(showsClaude, for: recentClaudeConsumer)
+        dashboard.setRecentGeminiVisible(showsGemini, for: recentClaudeConsumer)
     }
 
     private var sidebar: some View {
@@ -511,8 +522,16 @@ struct ControlCenterView: View {
                     }
                 } else if isCodex, dashboard.officialSampledAt != nil {
                     Text("Mesure périmée").font(.system(size: 12, weight: .medium)).foregroundStyle(.orange)
+                } else if source.harnessID == "gemini-cli",
+                          let win = dashboard.geminiQuotaSnapshot?.readout?.primaryWindow {
+                    Text("\(win.remainingPercent) % restants")
+                        .font(.system(size: 19, weight: .semibold).monospacedDigit())
+                    if let reset = win.resetsAt {
+                        Text("Réinit. \(reset.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
                 } else {
-                    Text(isCodex ? "Quota non disponible" : "Quota non fourni")
+                    Text(isCodex || source.harnessID == "gemini-cli" ? "Quota non disponible" : "Quota non fourni")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             }
@@ -1208,6 +1227,18 @@ private struct SourceCoverageSheet: View {
                     if let reset = dashboard.resetsAt {
                         Text("Fenêtre de 7 jours · \(fresh ? "réinitialisation" : "dernier reset annoncé") \(reset.formatted(date: .abbreviated, time: .shortened))")
                             .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                } else if coverage.harnessID == "gemini-cli" {
+                    let snapshot = dashboard.geminiQuotaSnapshot
+                    if let win = snapshot?.readout?.primaryWindow {
+                        Text("\(win.remainingPercent) % de quota restants (\(win.label))")
+                            .font(.system(size: 17, weight: .medium))
+                        if let reset = win.resetsAt {
+                            Text("Réinitialisation \(reset.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Quota Gemini Argon 4 en attente d’Antigravity.").font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                 } else {
                     Text("Quota non fourni par cette source.").font(.system(size: 12)).foregroundStyle(.secondary)

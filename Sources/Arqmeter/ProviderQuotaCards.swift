@@ -92,6 +92,7 @@ struct ProviderQuotaCards: View {
     let claude: ClaudeQuotaReport?
     let now: Date
     var cli: ClaudeCLIQuotaReport? = nil
+    var gemini: GeminiQuotaReport? = nil
     @State private var dragging: String?
 
     var body: some View {
@@ -111,6 +112,8 @@ struct ProviderQuotaCards: View {
                 sampledAt: dashboard.officialSampledAt, now: now, compact: true, handle: handle)
         case "claude-code":
             claudeCard(handle: handle)
+        case "gemini-cli":
+            geminiCard(handle: handle)
         default:
             activityCard(id, handle: handle)
         }
@@ -166,6 +169,67 @@ struct ProviderQuotaCards: View {
         .help("Limites du compte connecté, pas du contexte. Source officielle et heure d’observation ; aucune réponse modèle lancée pour les interroger.")
     }
 
+    private func geminiCard(handle: AnyView) -> some View {
+        let snapshot = GeminiMenuQuotaSnapshot.make(report: gemini ?? AntigravityQuotaReader.shared.latestReport(), at: now)
+        let records = historical?.records.filter { $0.harnessID == "gemini-cli" } ?? []
+        let aggregate = UsageAggregate(records: records)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Quota Gemini Argon 4").font(.system(size: 16, weight: .semibold, design: .rounded))
+                Spacer()
+                handle
+            }
+            if snapshot.isLastKnown {
+                Label("Dernier relevé · non actualisé", systemImage: "clock")
+                    .font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
+            }
+            if let readout = snapshot.readout {
+                let window = readout.primaryWindow
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(window.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(InstrumentTheme.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(window.remainingPercent) %")
+                            .font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text("restants · \(window.usedPercent) % utilisés")
+                            .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                    }
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.white.opacity(0.11))
+                            Capsule()
+                                .fill(window.remainingPercent <= 15 ? InstrumentTheme.alert : InstrumentTheme.cyan)
+                                .frame(width: max(4, proxy.size.width * CGFloat(window.remainingFraction)))
+                        }
+                    }
+                    .frame(height: 6)
+                    if let reset = window.resetsAt {
+                        Text("Reset \(reset.formatted(.dateTime.day().month(.abbreviated).hour().minute()))")
+                            .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                if let input = aggregate.inputTokens.value, let output = aggregate.outputTokens.value {
+                    let (total, overflow) = input.addingReportingOverflow(output)
+                    if !overflow, total > 0 {
+                        Divider()
+                        Text("\(TokenDialGeometry.label(Double(total))) tokens · période analysée · journaux locaux")
+                            .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                    }
+                }
+                Text("\(readout.provenance) · \(readout.observedAt.formatted(.dateTime.hour().minute().second()))")
+                    .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+            } else {
+                Text("Quota Antigravity en attente (ouvrez Antigravity pour actualiser le relevé en temps réel)")
+                    .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14).glassCard()
+        .help("Quota Gemini 4 Argon lu directement auprès du LanguageServer local d’Antigravity (GetCascadeModelConfigData).")
+    }
+
     private func activityCard(_ id: String, handle: AnyView) -> some View {
         let records = historical?.records.filter { $0.harnessID == id } ?? []
         let isOlder = records.isEmpty && historical?.olderSourceHistory[id] != nil
@@ -208,12 +272,16 @@ struct LiveProviderQuotaCards: View {
     @ObservedObject var preferences: SourceDisplayPreferences
     let historical: HistoricalDashboardSnapshot?
     @State private var report = ClaudeQuotaReport.read()
+    @State private var geminiReport = AntigravityQuotaReader.shared.latestReport()
     @State private var now = Date()
     var body: some View {
         ProviderQuotaCards(dashboard: dashboard, preferences: preferences,
-            historical: historical, claude: report, now: now, cli: ClaudeCLIQuotaReport.read())
+            historical: historical, claude: report, now: now, cli: ClaudeCLIQuotaReport.read(),
+            gemini: geminiReport)
             .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) {
-                now = $0; report = ClaudeQuotaReport.read()
+                now = $0
+                report = ClaudeQuotaReport.read()
+                geminiReport = AntigravityQuotaReader.shared.latestReport()
             }
     }
 }

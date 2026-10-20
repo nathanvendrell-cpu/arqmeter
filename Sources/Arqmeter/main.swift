@@ -424,7 +424,15 @@ final class OfficialUsageMonitor {
         dashboard.selectPrimarySource(sourcePreferences.selectedHistoryID)
         historyObserver = NotificationCenter.default.addObserver(forName: .arqmeterHistoryUpdated,
             object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dashboard.refreshPrimaryHistory(preservingCurrent: true) }
+            MainActor.assumeIsolated {
+                self?.dashboard.refreshPrimaryHistory(preservingCurrent: true)
+                self?.dashboard.refreshGeminiHistory(preservingCurrent: true)
+            }
+        }
+        if sourcePreferences.visibleIDs.contains("gemini-cli") {
+            AntigravityQuotaReader.shared.refresh { [weak self] _ in
+                self?.updateStatusTitle()
+            }
         }
         statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusTitle() }
@@ -568,6 +576,13 @@ final class OfficialUsageMonitor {
         let now = Date()
         let claude = ClaudeQuotaReport.read()
         let cli = ClaudeCLIQuotaReport.read()
+        if sourcePreferences.visibleIDs.contains("gemini-cli") {
+            AntigravityQuotaReader.shared.refreshIfNeeded(now: now) { [weak self] _ in
+                self?.updateStatusTitle()
+            }
+        }
+        let gemini = AntigravityQuotaReader.shared.latestReport()
+        dashboard.applyGeminiQuota(gemini, at: now)
         if sourcePreferences.showsCodexAndClaude {
             dashboard.applyClaudeQuota(statusLine: claude, cli: cli, at: now)
         }
@@ -575,7 +590,7 @@ final class OfficialUsageMonitor {
             codexSampledAt: dashboard.officialSampledAt, codexReset: dashboard.resetsAt,
             claude: claude, now: now, orderedIDs: sourcePreferences.menuDisplayOrder,
             claudeMode: sourcePreferences.claudeQuotaMode,
-            cli: cli,
+            cli: cli, gemini: gemini,
             primaryID: sourcePreferences.showsCodexAndClaude ? nil : sourcePreferences.primaryID,
             primaryReadout: sourcePreferences.showsCodexAndClaude ? nil : dashboard.primaryReadout)
     }

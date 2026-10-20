@@ -93,14 +93,18 @@ d’archive et signature/notarisation de code sont deux contrôles distincts.
 ## 4. Préparation ARQMETER sans publication implicite
 
 `scripts/prepare-sparkle-release.mjs` attend explicitement : `--app`, `--tools`,
-`--key-file`, `--output`, `--download-prefix`, `--installed-build`, et facultativement
+`--output`, `--download-prefix`, `--installed-build`, et exactement un signataire :
+`--key-file` ou `--keychain-account`. Facultativement :
 `--channel stable|prerelease`. Node et les outils Xcode/macOS sont requis.
 
 L’app doit déjà contenir le vrai feed, la vraie clé publique et les hôtes admis,
 être signée Developer ID et notarisée/stapled. La clé privée existante est fournie
 par un fichier externe au projet et au bundle, propriétaire courant, permissions
-privées ; jamais un argument contenant le secret, un fallback Keychain ou une
-clé créée par le script. Outils officiels 2.10.0 épinglés par hash.
+privées, ou par un compte Keychain explicitement nommé. Ce dernier passe par les
+outils officiels Sparkle ; `generate_keys --account NOM -p` vérifie uniquement la
+clé publique contre le bundle, sans créer ni exporter la clé privée. Aucun
+fallback Keychain implicite, secret dans les arguments ou clé créée par le script.
+Outils officiels 2.10.0 épinglés par hash.
 
 Sortie neuve uniquement sous `Products.noindex` : ZIP conservant les symlinks,
 appcast généré/signé avec `generate_appcast`, manifeste `release.json` et sa

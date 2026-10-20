@@ -8,12 +8,16 @@ import ArqmeterCore
                       orderedIDs: [String] = ["claude-code", "codex"],
                       claudeMode: ClaudeMenuQuotaMode = .both,
                       cli: ClaudeCLIQuotaReport? = ClaudeCLIQuotaReport.read(),
+                      gemini: GeminiQuotaReport? = nil,
                       primaryID: String? = nil, primaryReadout: PrimarySourceReadout? = nil) {
         let codex = ControlReadout.quota(codexRemaining, sampledAt: codexSampledAt, now: now, resetsAt: codexReset)
         let snapshot = ClaudeMenuQuotaSnapshot.make(statusLine: claude, cli: cli, at: now)
         let readout = snapshot.readout
         let claudeText = claudeMode.text(readout: readout) ?? ClaudeCLIQuotaReader.shared.compactState
         let codexText = codex.map { "\($0) %" } ?? "— %"
+        let geminiReport = gemini ?? AntigravityQuotaReader.shared.latestReport()
+        let geminiSnapshot = GeminiMenuQuotaSnapshot.make(report: geminiReport, at: now)
+        let geminiText = geminiSnapshot.readout.map { "\($0.primaryWindow.remainingPercent) %" } ?? "— %"
         let displayOrder: [String]
         if let primaryID, orderedIDs.contains(primaryID) {
             displayOrder = [primaryID] + orderedIDs.filter { $0 != primaryID }
@@ -29,8 +33,11 @@ import ArqmeterCore
         button.title = ""
         button.imagePosition = .imageOnly
         button.effectiveAppearance.performAsCurrentDrawingAppearance {
-            button.image = image(claude: claudeText, codex: codexText, orderedIDs: displayOrder, claudeMode: claudeMode,
-                                 claudeIsLastKnown: snapshot.isLastKnown, primaryID: primaryID, primaryMetric: primaryMetric)
+            button.image = image(claude: claudeText, codex: codexText, gemini: geminiText,
+                                 orderedIDs: displayOrder, claudeMode: claudeMode,
+                                 claudeIsLastKnown: snapshot.isLastKnown,
+                                 geminiIsLastKnown: geminiSnapshot.isLastKnown,
+                                 primaryID: primaryID, primaryMetric: primaryMetric)
         }
         let date = DateFormatter(); date.locale = Locale(identifier: "fr_FR"); date.dateFormat = "d MMM à HH:mm"
         let claudeTip: String
@@ -48,10 +55,21 @@ import ArqmeterCore
             claudeTip = "Claude Code · \(claudeMode.periods.map { $0.rawValue }.joined(separator: " puis ")) · " + ClaudeCLIQuotaReader.shared.state
         }
         let codexTip = codex.map { "Codex · \($0) % restants · 7 jours" + (codexReset.map { " · reset \(date.string(from: $0))" } ?? "") } ?? "Codex · quota officiel absent ou périmé"
+        let geminiTip: String = {
+            if let gReadout = geminiSnapshot.readout {
+                let win = gReadout.primaryWindow
+                let reset = win.resetsAt.map { " · reset \(date.string(from: $0))" } ?? ""
+                let status = geminiSnapshot.isLastKnown ? "Dernier relevé · non actualisé" : "Relevé reçu"
+                return "\(win.label) · \(status) · \(win.remainingPercent) % restants\(reset)\n\(gReadout.provenance) · reçu à \(date.string(from: gReadout.observedAt))"
+            }
+            let metric = primaryID == "gemini-cli" ? primaryMetric.map { " · \($0) observés" } ?? "" : ""
+            return "Gemini Argon 4\(metric) · quota Antigravity en attente"
+        }()
         let tips = displayOrder.map { id in
             switch id {
             case "claude-code": return claudeTip
             case "codex": return codexTip
+            case "gemini-cli": return geminiTip
             default:
                 let metric = id == primaryID ? primaryMetric.map { " · \($0) observés dans l’historique local" } ?? " · mesure indisponible" : ""
                 return SourceDisplay.name(id) + metric + " · quota non fourni"
@@ -61,8 +79,10 @@ import ArqmeterCore
         button.setAccessibilityLabel("ARQMETER. " + tips.joined(separator: ". "))
     }
 
-    private static func image(claude: String, codex: String, orderedIDs: [String] = ["claude-code", "codex"],
+    private static func image(claude: String, codex: String, gemini: String = "— %",
+                              orderedIDs: [String] = ["claude-code", "codex"],
                               claudeMode: ClaudeMenuQuotaMode = .both, claudeIsLastKnown: Bool = false,
+                              geminiIsLastKnown: Bool = false,
                               primaryID: String? = nil, primaryMetric: String? = nil) -> NSImage {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
@@ -72,9 +92,11 @@ import ArqmeterCore
         // Reserve the freshness marker even while current: no width jump when
         // the passive source is silent. The quota digits keep their size.
         let claudeSlot = quotaSlot + 14
+        let geminiSlot = slot + 14
         let entries = orderedIDs.filter(SourceDisplay.order.contains).map { id -> (CGPath?, String, CGFloat) in
             if id == "claude-code" { return (ProviderMenuGlyphs.claude, claude, 19 + claudeSlot) }
             if id == "codex" { return (ProviderMenuGlyphs.codex, codex, 19 + slot) }
+            if id == "gemini-cli" { return (ProviderMenuGlyphs.gemini, gemini, 19 + geminiSlot) }
             let label = (id == "ollama" ? "Ollama" : "Gemini") +
                 (id == primaryID ? " \(primaryMetric ?? "—")" : "")
             return (nil, label, ceil((label as NSString).size(withAttributes: attributes).width))
@@ -88,9 +110,10 @@ import ArqmeterCore
                 if let path = pair.0 { ProviderMenuGlyphs.draw(path, in: .init(x: x, y: 4, width: 14, height: 14)) }
                 let text = pair.1 as NSString
                 let isClaude = pair.0 === ProviderMenuGlyphs.claude
-                let markerWidth: CGFloat = isClaude ? 14 : 0
+                let isGeminiLastKnown = (pair.0 === ProviderMenuGlyphs.gemini) && geminiIsLastKnown
+                let markerWidth: CGFloat = (isClaude || pair.0 === ProviderMenuGlyphs.gemini) ? 14 : 0
                 text.draw(at: .init(x: x + pair.2 - markerWidth - text.size(withAttributes: attributes).width, y: 3), withAttributes: attributes)
-                if isClaude && claudeIsLastKnown,
+                if ((isClaude && claudeIsLastKnown) || isGeminiLastKnown),
                    let clock = NSImage(systemSymbolName: "clock", accessibilityDescription: "Dernier relevé, non actualisé") {
                     clock.draw(in: .init(x: x + pair.2 - 10, y: 6, width: 10, height: 10))
                 }
@@ -103,14 +126,19 @@ import ArqmeterCore
     }
 
     static func selfTest() throws {
-        print("Diagnostic menu : Claude=\(ProviderMenuGlyphs.claude != nil), Codex=\(ProviderMenuGlyphs.codex != nil), largeur=\(image(claude: "100 %", codex: "100 %").size.width)")
-        guard ProviderMenuGlyphs.claude != nil, ProviderMenuGlyphs.codex != nil,
+        print("Diagnostic menu : Claude=\(ProviderMenuGlyphs.claude != nil), Codex=\(ProviderMenuGlyphs.codex != nil), Gemini=\(ProviderMenuGlyphs.gemini != nil), largeur=\(image(claude: "100 %", codex: "100 %").size.width)")
+        guard ProviderMenuGlyphs.claude != nil, ProviderMenuGlyphs.codex != nil, ProviderMenuGlyphs.gemini != nil,
               image(claude: "100 % - 100 %", codex: "100 %").size.width <= 270 else {
             throw NSError(domain: "ProviderQuotaMenu", code: 1)
         }
-        print("Menu : deux logos vectoriels valides, deux fenêtres Claude sans réduction des textes : OK")
-        guard image(claude: "100 % - 100 %", codex: "100 %", orderedIDs: SourceDisplay.order).size.width <= 420 else {
+        print("Menu : trois logos vectoriels valides, deux fenêtres Claude sans réduction des textes : OK")
+        guard image(claude: "100 % - 100 %", codex: "100 %", gemini: "100 %", orderedIDs: SourceDisplay.order).size.width <= 420 else {
             throw NSError(domain: "ProviderQuotaMenu", code: 4)
+        }
+        let geminiCurrent = image(claude: "100 % - 100 %", codex: "100 %", gemini: "100 %", orderedIDs: SourceDisplay.order)
+        let geminiStale = image(claude: "100 % - 100 %", codex: "100 %", gemini: "100 %", orderedIDs: SourceDisplay.order, geminiIsLastKnown: true)
+        guard geminiCurrent.size == geminiStale.size else {
+            throw NSError(domain: "ProviderQuotaMenu", code: 7)
         }
         for state in ["…", "!", "?"] {
             let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
@@ -137,8 +165,12 @@ import ArqmeterCore
         let snapshot = ClaudeMenuQuotaSnapshot.make(statusLine: report, cli: ClaudeCLIQuotaReport.read(), at: now)
         let claude = mode.text(readout: snapshot.readout)
         let value = ControlReadout.quota(codex?.remainingPercent, sampledAt: codex?.timestamp, now: now, resetsAt: codex?.resetsAt)
-        let menuImage = image(claude: claude ?? ClaudeCLIQuotaReader.shared.compactState, codex: value.map { "\($0) %" } ?? "— %",
-            orderedIDs: SourceDisplayPreferences.shared.orderedVisibleIDs, claudeMode: mode, claudeIsLastKnown: snapshot.isLastKnown)
+        let geminiSnapshot = GeminiMenuQuotaSnapshot.make(report: AntigravityQuotaReader.shared.latestReport(), at: now)
+        let geminiText = geminiSnapshot.readout.map { "\($0.primaryWindow.remainingPercent) %" } ?? "— %"
+        let menuImage = image(claude: claude ?? ClaudeCLIQuotaReader.shared.compactState,
+            codex: value.map { "\($0) %" } ?? "— %", gemini: geminiText,
+            orderedIDs: SourceDisplayPreferences.shared.orderedVisibleIDs, claudeMode: mode,
+            claudeIsLastKnown: snapshot.isLastKnown, geminiIsLastKnown: geminiSnapshot.isLastKnown)
         let width = Int(menuImage.size.width) + 16, height = 38
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width * 4, pixelsHigh: height * 4,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
@@ -151,7 +183,7 @@ import ArqmeterCore
         menuImage.draw(in: .init(x: 8, y: 8, width: menuImage.size.width, height: menuImage.size.height))
         guard let png = bitmap.representation(using: .png, properties: [:]) else { throw NSError(domain: "ProviderQuotaMenu", code: 3) }
         try png.write(to: url, options: .atomic)
-        print("Rendu AppKit hors écran (pas capture macOS). Claude \(claude ?? "non reçu") ; Codex \(value.map(String.init) ?? "absent/périmé") % restants. Quotas réels uniquement.")
+        print("Rendu AppKit hors écran (pas capture macOS). Claude \(claude ?? "non reçu") ; Codex \(value.map(String.init) ?? "absent/périmé") % restants ; Gemini \(geminiText). Quotas réels uniquement.")
     }
 
     /// Read-only runtime diagnostic; the same preference and readout as the bar.
@@ -168,11 +200,23 @@ import ArqmeterCore
             }
             return value
         }
+        let geminiSnapshot = GeminiMenuQuotaSnapshot.make(report: AntigravityQuotaReader.shared.latestReport(), at: now)
         var result: [String: Any] = ["mode": preferences.claudeQuotaMode.rawValue,
                                     "windows": windows,
                                     "text": preferences.claudeQuotaMode.text(readout: readout) ?? "no-current-reading",
                                     "orderedSources": preferences.orderedVisibleIDs,
                                     "freshness": readout == nil ? "unavailable" : snapshot.isLastKnown ? "last-known" : "recent-receipt"]
+        if let gReadout = geminiSnapshot.readout {
+            var geminiDict: [String: Any] = [
+                "label": gReadout.primaryWindow.label,
+                "remainingPercent": gReadout.primaryWindow.remainingPercent,
+                "freshness": geminiSnapshot.isLastKnown ? "last-known" : "live"
+            ]
+            if let reset = gReadout.primaryWindow.resetsAt {
+                geminiDict["resetsAt"] = ISO8601DateFormatter().string(from: reset)
+            }
+            result["gemini"] = geminiDict
+        }
         if let readout { result["receivedAt"] = ISO8601DateFormatter().string(from: readout.observedAt) }
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
            let text = String(data: data, encoding: .utf8) { print(text) }

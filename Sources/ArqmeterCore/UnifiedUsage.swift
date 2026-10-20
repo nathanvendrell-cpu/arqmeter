@@ -30,6 +30,7 @@ public struct UsageSourceKind: Hashable, Sendable, Codable {
     public static let codexOfficialAccount = Self("codex.official-account")
     public static let claudeCodeSessionLog = Self("claude-code.session-log")
     public static let geminiSessionLog = Self("gemini-cli.session-log")
+    public static let antigravitySessionLog = Self("antigravity.session-log")
     public static let ollamaServerLog = Self("ollama.server-log")
 }
 

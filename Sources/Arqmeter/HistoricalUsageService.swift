@@ -76,6 +76,16 @@ final class HistoricalUsageService {
         }
     }
 
+    func recordGeminiQuota(_ percent: Int, at date: Date) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                try self.engine?.store.saveQuota(harness: "gemini-cli", remainingPercent: percent,
+                    at: date, provenance: "Antigravity LanguageServer · GetCascadeModelConfigData")
+            } catch { self.lastError = "Échantillon quota Gemini non enregistré : \(error)" }
+        }
+    }
+
     func snapshot(days: Int = 7, completion: @escaping (HistoricalDashboardSnapshot) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -213,6 +223,40 @@ final class HistoricalUsageService {
                 DispatchQueue.main.async { completion(records, errorMessage, end, result.pendingRecentWork, lastKnownAt) }
             } catch {
                 DispatchQueue.main.async { completion([], "Lecture récente de Claude impossible", Date(), true, nil) }
+            }
+        }
+    }
+
+    func recentGeminiRecords(duration: TimeInterval,
+                             completion: @escaping ([UnifiedUsageRecord], String?, Date, Bool, Date?) -> Void) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let records: [UnifiedUsageRecord], errorMessage: String?
+            do {
+                guard let engine = self.engine else {
+                    DispatchQueue.main.async { completion([], "Historique local pas encore disponible", Date(), true, nil) }
+                    return
+                }
+                let result = try engine.scanRecentGemini()
+                let end = Date()
+                records = try engine.store.records(harness: "gemini-cli",
+                    from: end.addingTimeInterval(-duration), to: end)
+                let lastKnownAt: Date?
+                let lastDateUnavailable: Bool
+                do {
+                    lastKnownAt = try engine.store.latestEventDate(harness: "gemini-cli")
+                        .flatMap { $0 <= end ? $0 : nil }
+                    lastDateUnavailable = false
+                } catch {
+                    lastKnownAt = nil
+                    lastDateUnavailable = true
+                }
+                errorMessage = result.readFailures > 0 ? "Lecture récente de Gemini partielle" :
+                    result.diagnostic == "Source absente ou illisible" ? result.diagnostic :
+                    lastDateUnavailable ? "Date du dernier événement indisponible" : nil
+                DispatchQueue.main.async { completion(records, errorMessage, end, result.pendingRecentWork, lastKnownAt) }
+            } catch {
+                DispatchQueue.main.async { completion([], "Lecture récente de Gemini impossible", Date(), true, nil) }
             }
         }
     }

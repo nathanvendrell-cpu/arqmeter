@@ -1,4 +1,4 @@
-# ARQMETER — support de mise à jour, 1.0.25
+# ARQMETER — support de mise à jour, 1.0.26
 
 ## État et limites
 
@@ -65,20 +65,30 @@ installé. Ils ne créent pas de credential, ne publient ni n’installent rien.
 Le contrat est une proposition à intégrer par les propriétaires AUTORENDER/BRAIN,
 pas une intégration runtime déjà effectuée.
 
-Recette de préparation : **14 tests Node réussis**, dont génération d’un vrai
+Recette de préparation : **16 tests Node réussis**, dont génération d’un vrai
 appcast signé, archive jetable signée et manifeste JSON à signature détachée avec
 les outils officiels épinglés ; altérations et mauvaise clé refusées. Les tests
 couvrent aussi états, canaux, compatibilité, absence de signature Developer ID,
 sortie déjà présente, parent symlinké et arrêt des processus/enfants sur timeout.
 Fixtures, clés éphémères et caches d’extraction propres aux tests nettoyés.
-La suite Swift de l’app déjà validée n’est pas modifiée par ces scripts/docs.
+Le signataire peut être fourni par fichier privé externe ou par compte Keychain
+explicitement nommé, sans export de clé ; le préparateur ne crée aucun credential.
 
 Sur le Mac de préparation, aucun Developer ID valide n’est disponible ; le
 bundle installé ne contient ni feed ni clé publique, et le dépôt n’a pas de
 secret/variable de publication configuré. Cela ne prouve pas l’absence d’une clé
 privée conservée ailleurs par son propriétaire. Le préparateur refuse l’app
 installée avec `configurationMissing`, sans sortie et sans installation.
-La 1.0.25 et son service ne sont pas modifiés/redémarrés par cette recette.
+La préparation d’une release ne modifie ni le bundle installé ni son service.
+
+Contrôle Xcode du 20 octobre : compte connecté, seule une Personal Team est
+proposée et aucun certificat n’est présent ; le menu ne propose qu’Apple
+Development. Developer ID et notarisation restent bloqués avant activation
+de l’adhésion appropriée. Aucun contrat ni paiement accepté automatiquement.
+L’inscription a été ouverte jusqu’à la fiche de coordonnées. Les étapes
+engageantes et payantes restent en attente d’un nouvel accord explicite ; aucun
+paiement n’a été lancé par cette intervention. Les préparatifs gratuits, les
+tests et l’installation locale ne dépendent pas de cette adhésion.
 
 **Dépendance propriétaire précise** : mettre à disposition une identité Developer
 ID/notarisation utilisable et le signataire Ed25519 approuvé (référence sécurisée,

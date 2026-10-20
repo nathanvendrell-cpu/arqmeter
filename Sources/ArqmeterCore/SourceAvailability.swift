@@ -16,15 +16,21 @@ public enum SourceAvailabilityProbe {
         let installed: [String: Bool] = [
             "codex": UsageFiles.installed("codex") || manager.fileExists(atPath: "/Applications/Codex.app"),
             "claude-code": UsageFiles.installed("claude"),
-            "gemini-cli": UsageFiles.installed("gemini"),
+            "gemini-cli": UsageFiles.installed("gemini") || manager.fileExists(atPath: "/Applications/Antigravity.app"),
             "ollama": UsageFiles.installed("ollama")
         ]
         return HistoricalSource.defaults(home: home).map { source in
-            SourceAvailability(harnessID: source.harnessID,
+            let brainPath = source.antigravityBrainRoot?.path
+            let brainExists = brainPath.map { manager.fileExists(atPath: $0) } ?? false
+            let brainReadable = brainPath.map { manager.isReadableFile(atPath: $0) } ?? false
+            let rootExists = manager.fileExists(atPath: source.root.path) || brainExists
+            let rootReadable = manager.isReadableFile(atPath: source.root.path) || brainReadable
+            let displayPath = (brainReadable ? brainPath : nil) ?? source.root.path
+            return SourceAvailability(harnessID: source.harnessID,
                 installed: installed[source.harnessID] ?? false,
-                logRootExists: manager.fileExists(atPath: source.root.path),
-                logRootReadable: manager.isReadableFile(atPath: source.root.path),
-                logRootPath: source.root.path)
+                logRootExists: rootExists,
+                logRootReadable: rootReadable,
+                logRootPath: displayPath)
         }
     }
 }

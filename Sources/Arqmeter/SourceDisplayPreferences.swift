@@ -9,7 +9,7 @@ enum SourceDisplay {
         switch id {
         case "codex": return "Codex"
         case "claude-code": return "Claude Code"
-        case "gemini-cli": return "Gemini CLI"
+        case "gemini-cli": return "Gemini / Antigravity"
         case "ollama": return "Ollama local"
         default: return id
         }

@@ -86,6 +86,24 @@ enum UsageFiles {
         }.sorted { $0.path < $1.path }
     }
 
+    /// Direct lookup of Antigravity per-conversation transcript.jsonl files without
+    /// traversing scratch/, steps/ or transcript_full.jsonl.
+    static func antigravityTranscriptFiles(in brainRoot: URL) -> [URL] {
+        let manager = FileManager.default
+        let dirKeys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey]
+        let fileKeys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+        guard let children = try? manager.contentsOfDirectory(at: brainRoot, includingPropertiesForKeys: Array(dirKeys),
+                                                              options: [.skipsHiddenFiles]) else { return [] }
+        return children.compactMap { child -> URL? in
+            guard let dirValues = try? child.resourceValues(forKeys: dirKeys),
+                  dirValues.isDirectory == true, dirValues.isSymbolicLink != true else { return nil }
+            let transcript = child.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+            guard let fileValues = try? transcript.resourceValues(forKeys: fileKeys),
+                  fileValues.isRegularFile == true, fileValues.isSymbolicLink != true else { return nil }
+            return transcript
+        }.sorted { $0.path < $1.path }
+    }
+
     /// Streaming, bounded-memory JSONL reader. An incomplete last line is never imported.
     static func lines(at url: URL, maxLineBytes: Int = 4 * 1024 * 1024,
                       tailBytes: Int? = nil,
@@ -229,18 +247,30 @@ public struct GeminiAdapter: UnifiedUsageAdapter {
     public let harnessID = "gemini-cli"
     public let root: URL
     public let historyRoot: URL
+    public let antigravityBrainRoot: URL?
     public let installed: Bool
 
     public init(root: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/tmp"),
                 historyRoot: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/history"),
+                antigravityBrainRoot: URL? = nil,
                 installed: Bool? = nil) {
+        let defaultTmp = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/tmp")
         self.root = root
         self.historyRoot = historyRoot
-        self.installed = installed ?? UsageFiles.installed("gemini")
+        if let antigravityBrainRoot {
+            self.antigravityBrainRoot = antigravityBrainRoot
+        } else if root.standardizedFileURL == defaultTmp.standardizedFileURL {
+            self.antigravityBrainRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity/brain")
+        } else {
+            self.antigravityBrainRoot = nil
+        }
+        self.installed = installed ?? (UsageFiles.installed("gemini") || FileManager.default.fileExists(atPath: "/Applications/Antigravity.app"))
     }
 
     public func read() -> UsageSourceSnapshot {
-        let readable = FileManager.default.isReadableFile(atPath: root.path)
+        let rootReadable = FileManager.default.isReadableFile(atPath: root.path)
+        let brainReadable = antigravityBrainRoot.map { FileManager.default.isReadableFile(atPath: $0.path) } ?? false
+        let readable = rootReadable || brainReadable
         var byID: [String: UnifiedUsageRecord] = [:]
         var failures = 0
         for file in UsageFiles.files(in: root, extension: "jsonl", recursive: true)
@@ -264,13 +294,75 @@ public struct GeminiAdapter: UnifiedUsageAdapter {
                 }
             } catch { failures += 1 }
         }
+        if let brainRoot = antigravityBrainRoot {
+            for file in UsageFiles.antigravityTranscriptFiles(in: brainRoot) {
+                do {
+                    try UsageFiles.lines(at: file) { line, _ in
+                        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                              let record = Self.parse(object, session: nil, projectPath: nil, file: file) else { return }
+                        byID[record.eventID] = record
+                    }
+                } catch { failures += 1 }
+            }
+        }
+        let defaultTmp = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/tmp")
+        let quotaSnapshot: GeminiQuotaSnapshot? = root.standardizedFileURL == defaultTmp.standardizedFileURL
+            ? GeminiMenuQuotaSnapshot.make(report: GeminiQuotaReport.read(), at: Date()).readout
+            : nil
         return UsageSourceSnapshot(harnessID: harnessID, displayName: "Gemini CLI", installed: installed, readable: readable,
             records: byID.values.sorted { $0.timestamp < $1.timestamp },
-            coverage: "Messages Gemini des sessions ~/.gemini/tmp/*/chats",
-            diagnostic: failures > 0 ? "\(failures) journal(aux) illisible(s) · résultat partiel" : nil)
+            coverage: "Sessions Gemini (~/.gemini/tmp/*/chats et ~/.gemini/antigravity/brain/*/transcript.jsonl)",
+            diagnostic: failures > 0 ? "\(failures) journal(aux) illisible(s) · résultat partiel" : nil,
+            quotaRemainingPercent: quotaSnapshot.map { .measured($0.primaryWindow.remainingPercent) } ?? .unavailable,
+            quotaSampledAt: quotaSnapshot?.observedAt)
     }
 
     static func parse(_ message: [String: Any], session: String?, projectPath: String?, file: URL) -> UnifiedUsageRecord? {
+        if message["source"] as? String == "MODEL",
+           let stepIndex = UsageFiles.integer(message["step_index"]),
+           let date = UsageFiles.date(message["created_at"] as? String),
+           let directInput = UsageFiles.integer(message["input_tokens"]),
+           let output = UsageFiles.integer(message["output_tokens"]) {
+            let cacheRead = UsageFiles.integer(message["cache_read_tokens"]) ?? 0
+            guard stepIndex >= 0, directInput >= 0, output >= 0, cacheRead >= 0 else { return nil }
+            if let status = message["status"] as? String, status != "DONE" { return nil }
+            let (totalInput, inputOverflow) = directInput.addingReportingOverflow(cacheRead)
+            let (combined, combinedOverflow) = totalInput.addingReportingOverflow(output)
+            guard !inputOverflow, !combinedOverflow, combined > 0 else { return nil }
+            let parts = file.pathComponents
+            let convID: String = {
+                if let brainIdx = parts.lastIndex(of: "brain"), brainIdx + 1 < parts.count {
+                    return parts[brainIdx + 1]
+                }
+                return session ?? file.deletingLastPathComponent().lastPathComponent
+            }()
+            let model = ((message["model"] as? String) ?? (message["model_id"] as? String))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let modelID = model.flatMap { $0.isEmpty ? nil : $0 }
+            let provider: String? = modelID.flatMap {
+                if $0.lowercased().hasPrefix("gemini") { return "google" }
+                if $0.lowercased().hasPrefix("claude") { return "anthropic" }
+                return nil
+            }
+            return UnifiedUsageRecord(
+                eventID: "gemini:antigravity:\(convID):\(stepIndex)",
+                timestamp: date,
+                projectPath: projectPath,
+                sessionID: convID,
+                harnessID: "gemini-cli",
+                providerID: provider,
+                modelID: modelID,
+                inputTokens: .measured(totalInput),
+                outputTokens: .measured(output),
+                cachedInputTokens: message["cache_read_tokens"] != nil ? .measured(cacheRead) : .unavailable,
+                reasoningTokens: .unavailable,
+                costUSD: .unavailable,
+                durationSeconds: .unavailable,
+                executionLocation: .unavailable,
+                sourceKind: .antigravitySessionLog,
+                provenance: "Antigravity · transcript.jsonl · step \(stepIndex) · entrée = directe + cache ; modèle uniquement si rapporté"
+            )
+        }
         guard message["type"] as? String == "gemini",
               let session, !session.isEmpty,
               let id = message["id"] as? String, !id.isEmpty,

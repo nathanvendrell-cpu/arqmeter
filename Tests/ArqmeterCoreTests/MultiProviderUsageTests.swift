@@ -138,4 +138,60 @@ final class MultiProviderUsageTests: XCTestCase {
         XCTAssertEqual(usage.aggregate().inputTokens.value, 5)
         XCTAssertEqual(usage.aggregate().cachedInputTokens.value, nil)
     }
+
+    func testAntigravityGeminiArgonQuotaAndTranscriptParsing() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let brain = root.appendingPathComponent("gemini/antigravity/brain")
+        let transcript = brain.appendingPathComponent("conv-123/.system_generated/logs/transcript.jsonl")
+        try write(
+            #"{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-20T14:00:00Z"}"# + "\n" +
+            #"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-20T14:00:10Z","input_tokens":4000,"cache_read_tokens":16000,"output_tokens":500}"# + "\n",
+            to: transcript
+        )
+        let source = GeminiAdapter(
+            root: root.appendingPathComponent("gemini/tmp"),
+            historyRoot: root.appendingPathComponent("gemini/history"),
+            antigravityBrainRoot: brain,
+            installed: true
+        ).read()
+        XCTAssertEqual(source.records.count, 1)
+        XCTAssertEqual(source.records[0].sessionID, "conv-123")
+        XCTAssertEqual(source.records[0].inputTokens, .measured(20000))
+        XCTAssertEqual(source.records[0].cachedInputTokens, .measured(16000))
+        XCTAssertEqual(source.records[0].outputTokens, .measured(500))
+
+        let configJSON = """
+        {
+          "clientModelConfigs": [
+            {
+              "label": "Claude Sonnet 4.6 (Thinking)",
+              "modelId": "claude-sonnet-4-6-thinking",
+              "quotaInfo": { "remainingFraction": 1.0, "resetTime": "2026-10-20T19:16:33Z" }
+            },
+            {
+              "label": "Gemini 4 Argon (High)",
+              "modelId": "gemini-4-argon-high",
+              "modelOrAlias": { "model": "MODEL_PLACEHOLDER_M417" },
+              "quotaInfo": { "remainingFraction": 0.6922256, "resetTime": "2026-10-27T13:44:49Z" }
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+        let now = ISO8601DateFormatter().date(from: "2026-10-20T14:30:00Z")!
+        let parsed = GeminiQuotaReport.parseLanguageServerConfig(configJSON, observedAt: now)
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed?.primaryWindow.modelId, "gemini-4-argon-high")
+        XCTAssertEqual(parsed?.primaryWindow.remainingPercent, 69)
+        XCTAssertEqual(parsed?.primaryWindow.usedPercent, 31)
+
+        let report = GeminiQuotaReport(observedAt: now, snapshot: parsed, lastKnown: parsed)
+        let freshMenu = GeminiMenuQuotaSnapshot.make(report: report, at: now.addingTimeInterval(30))
+        XCTAssertEqual(freshMenu.readout?.primaryWindow.remainingPercent, 69)
+        XCTAssertFalse(freshMenu.isLastKnown)
+
+        let staleMenu = GeminiMenuQuotaSnapshot.make(report: report, at: now.addingTimeInterval(600))
+        XCTAssertEqual(staleMenu.readout?.primaryWindow.remainingPercent, 69)
+        XCTAssertTrue(staleMenu.isLastKnown)
+    }
 }

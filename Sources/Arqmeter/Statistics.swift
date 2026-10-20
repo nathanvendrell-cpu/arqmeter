@@ -33,6 +33,7 @@ final class DashboardModel: ObservableObject {
     @Published var isLive = false
     @Published var quotaHistoryExpanded = false
     @Published private(set) var claudeQuotaSnapshot: ClaudeMenuQuotaSnapshot?
+    @Published private(set) var geminiQuotaSnapshot: GeminiMenuQuotaSnapshot?
     @Published private(set) var settingsRequestID = 0
     @Published private(set) var primaryHistory: UnifiedUsage?
     @Published private(set) var primaryHistoryReadAt: Date?
@@ -41,6 +42,12 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var primaryHistoryPending = false
     @Published private(set) var primaryHistoryID = "codex"
     @Published private(set) var claudeLastKnownEventAt: Date?
+    @Published private(set) var geminiHistory: UnifiedUsage?
+    @Published private(set) var geminiHistoryReadAt: Date?
+    @Published private(set) var geminiHistoryError: String?
+    @Published private(set) var geminiHistoryLoading = false
+    @Published private(set) var geminiHistoryPending = false
+    @Published private(set) var geminiLastKnownEventAt: Date?
     let comparison: ComparisonModel
     let accountTimeline = AccountTimelineModel()
     private var lastLoad: Date?
@@ -53,12 +60,19 @@ final class DashboardModel: ObservableObject {
     private var liveDemand = LiveReadDemand()
     private var primaryHistoryGeneration = 0
     private var primaryHistoryWindow: (start: Date, end: Date)?
+    private var geminiHistoryGeneration = 0
+    private var geminiHistoryWindow: (start: Date, end: Date)?
     private let readPrimaryHistory: PrimaryHistoryReader
     private let readRecentClaude: RecentClaudeReader
+    private let readRecentGemini: RecentClaudeReader
     private var recentClaudeVisibleConsumers: Set<String> = []
     private var recentClaudeInFlight = false
     private var recentClaudeAttemptID = 0
     private var lastRecentClaudeAttempt: Date?
+    private var recentGeminiVisibleConsumers: Set<String> = []
+    private var recentGeminiInFlight = false
+    private var recentGeminiAttemptID = 0
+    private var lastRecentGeminiAttempt: Date?
     private let primaryAvailability: (String) -> (installed: Bool, readable: Bool)
 
     init(quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore(),
@@ -70,6 +84,9 @@ final class DashboardModel: ObservableObject {
          readRecentClaude: @escaping RecentClaudeReader = { duration, completion in
              HistoricalUsageService.shared.recentClaudeRecords(duration: duration, completion: completion)
          },
+         readRecentGemini: @escaping RecentClaudeReader = { duration, completion in
+             HistoricalUsageService.shared.recentGeminiRecords(duration: duration, completion: completion)
+         },
          primaryAvailability: @escaping (String) -> (installed: Bool, readable: Bool) = { id in
              let source = SourceAvailabilityProbe.detect().first { $0.harnessID == id }
              return (source?.installed ?? false, source?.logRootReadable ?? false)
@@ -79,6 +96,7 @@ final class DashboardModel: ObservableObject {
         self.scanner = localActivityStore
         self.readPrimaryHistory = readPrimaryHistory
         self.readRecentClaude = readRecentClaude
+        self.readRecentGemini = readRecentGemini
         self.primaryAvailability = primaryAvailability
         quotaHistory = quotaHistoryStore.points
     }
@@ -109,14 +127,22 @@ final class DashboardModel: ObservableObject {
         claudeQuotaSnapshot = ClaudeMenuQuotaSnapshot.make(statusLine: statusLine, cli: cli, at: now)
     }
 
+    func applyGeminiQuota(_ report: GeminiQuotaReport?, at now: Date) {
+        geminiQuotaSnapshot = GeminiMenuQuotaSnapshot.make(report: report, at: now)
+    }
+
     func setConsumptionRange(_ range: ConsumptionRange) {
         consumptionRange = range
         consumptionPage = 0
         selectedConsumptionBucket = nil
         primaryHistoryPending = false
+        geminiHistoryPending = false
         lastRecentClaudeAttempt = nil
+        lastRecentGeminiAttempt = nil
         refreshPrimaryHistory()
+        refreshGeminiHistory()
         refreshVisibleClaude()
+        refreshVisibleGemini()
     }
 
     func selectPrimarySource(_ id: String) {
@@ -136,6 +162,7 @@ final class DashboardModel: ObservableObject {
         invalidateRecentClaudeAttempt()
         refreshPrimaryHistory()
         refreshVisibleClaude()
+        refreshVisibleGemini()
     }
 
     /// Reads the existing indexed, source-filtered history. The shared scanner
@@ -161,6 +188,47 @@ final class DashboardModel: ObservableObject {
             self.acceptPrimaryHistory(records, error: error, id: id, range: range,
                 start: start, end: end, preservingCurrent: preservingCurrent)
         }
+    }
+
+    func refreshGeminiHistory(preservingCurrent: Bool = false) {
+        guard !recentGeminiVisibleConsumers.isEmpty else { return }
+        geminiHistoryGeneration += 1
+        let generation = geminiHistoryGeneration
+        let range = consumptionRange
+        let end = Date()
+        let start = end.addingTimeInterval(-range.historicalDuration)
+        if !preservingCurrent {
+            geminiHistory = nil
+            geminiHistoryReadAt = nil
+            geminiHistoryWindow = nil
+        }
+        geminiHistoryError = nil
+        geminiHistoryLoading = true
+        readPrimaryHistory("gemini-cli", start, end) { [weak self] records, error in
+            guard let self, self.geminiHistoryGeneration == generation,
+                  self.consumptionRange == range else { return }
+            self.acceptGeminiHistory(records, error: error, range: range,
+                start: start, end: end, preservingCurrent: preservingCurrent)
+        }
+    }
+
+    private func acceptGeminiHistory(_ records: [UnifiedUsageRecord], error: String?,
+                                     range: ConsumptionRange, start: Date, end: Date,
+                                     preservingCurrent: Bool) {
+        if error != nil && preservingCurrent && geminiHistory != nil {
+            geminiHistoryError = error
+            geminiHistoryLoading = false
+            return
+        }
+        let availability = primaryAvailability("gemini-cli")
+        let source = UsageSourceSnapshot(harnessID: "gemini-cli", installed: availability.installed,
+            readable: availability.readable, records: records.filter { $0.harnessID == "gemini-cli" },
+            coverage: "Historique local indexé · \(range.label)", diagnostic: error)
+        geminiHistory = UnifiedUsage(sources: [source])
+        geminiHistoryReadAt = Date()
+        geminiHistoryWindow = (start, end)
+        geminiHistoryError = error
+        geminiHistoryLoading = false
     }
 
     private func acceptPrimaryHistory(_ records: [UnifiedUsageRecord], error: String?, id: String,
@@ -191,10 +259,27 @@ final class DashboardModel: ObservableObject {
         if visible { refreshVisibleClaude() }
     }
 
+    func setRecentGeminiVisible(_ visible: Bool, for consumer: String) {
+        let wasEmpty = recentGeminiVisibleConsumers.isEmpty
+        if visible { recentGeminiVisibleConsumers.insert(consumer) }
+        else { recentGeminiVisibleConsumers.remove(consumer) }
+        if !visible && recentGeminiVisibleConsumers.isEmpty { invalidateRecentGeminiAttempt() }
+        if visible {
+            if wasEmpty && geminiHistory == nil { refreshGeminiHistory() }
+            refreshVisibleGemini()
+        }
+    }
+
     private func invalidateRecentClaudeAttempt() {
         recentClaudeAttemptID += 1
         recentClaudeInFlight = false
         lastRecentClaudeAttempt = nil
+    }
+
+    private func invalidateRecentGeminiAttempt() {
+        recentGeminiAttemptID += 1
+        recentGeminiInFlight = false
+        lastRecentGeminiAttempt = nil
     }
 
     func refreshVisibleClaude(now: Date = Date()) {
@@ -235,10 +320,61 @@ final class DashboardModel: ObservableObject {
         }
     }
 
+    func refreshVisibleGemini(now: Date = Date()) {
+        guard isLive, !recentGeminiVisibleConsumers.isEmpty, !recentGeminiInFlight else { return }
+        guard lastRecentGeminiAttempt.map({ now.timeIntervalSince($0) >= 4 }) ?? true else { return }
+        recentGeminiInFlight = true
+        recentGeminiAttemptID += 1
+        let attemptID = recentGeminiAttemptID
+        lastRecentGeminiAttempt = now
+        geminiHistoryGeneration += 1
+        let generation = geminiHistoryGeneration
+        let range = consumptionRange
+        if geminiHistory == nil { geminiHistoryLoading = true }
+        if primaryHistoryID == "gemini-cli" && primaryHistory == nil { primaryHistoryLoading = true }
+        readRecentGemini(range.historicalDuration) { [weak self] records, error, windowEnd, pending, lastKnownAt in
+            guard let self else { return }
+            guard self.recentGeminiAttemptID == attemptID else { return }
+            self.recentGeminiInFlight = false
+            guard self.isLive, !self.recentGeminiVisibleConsumers.isEmpty else { return }
+            guard self.geminiHistoryGeneration == generation, self.consumptionRange == range else {
+                self.lastRecentGeminiAttempt = nil
+                self.refreshVisibleGemini()
+                return
+            }
+            self.geminiHistoryPending = pending
+            if error == nil {
+                self.geminiLastKnownEventAt = lastKnownAt.flatMap { $0 <= windowEnd ? $0 : nil }
+            }
+            let start = windowEnd.addingTimeInterval(-range.historicalDuration)
+            if pending && records.isEmpty && self.geminiHistory != nil {
+                self.geminiHistoryError = error
+                self.geminiHistoryLoading = false
+            } else {
+                self.acceptGeminiHistory(records, error: error, range: range,
+                    start: start, end: windowEnd, preservingCurrent: true)
+            }
+            if self.primaryHistoryID == "gemini-cli" {
+                self.primaryHistoryPending = pending
+                self.acceptPrimaryHistory(records, error: error, id: "gemini-cli", range: range,
+                    start: start, end: windowEnd, preservingCurrent: true)
+            }
+        }
+    }
+
     var primaryReadout: PrimarySourceReadout? {
         guard let primaryHistory, let primaryHistoryWindow, primaryHistoryID != "codex" else { return nil }
         return PrimarySourceReadout(usage: primaryHistory, primaryID: primaryHistoryID,
             from: primaryHistoryWindow.start, to: primaryHistoryWindow.end)
+    }
+
+    var geminiReadout: PrimarySourceReadout? {
+        if primaryHistoryID == "gemini-cli", let readout = primaryReadout {
+            return readout
+        }
+        guard let geminiHistory, let geminiHistoryWindow else { return nil }
+        return PrimarySourceReadout(usage: geminiHistory, primaryID: "gemini-cli",
+            from: geminiHistoryWindow.start, to: geminiHistoryWindow.end)
     }
 
     func startLive(for consumer: String = "default") {
@@ -251,10 +387,12 @@ final class DashboardModel: ObservableObject {
             self?.refreshLocal()
             self?.load()
             self?.refreshVisibleClaude()
+            self?.refreshVisibleGemini()
         }
         liveTimer = timer
         RunLoop.main.add(timer, forMode: .common)
         refreshVisibleClaude()
+        refreshVisibleGemini()
     }
 
     func stopLive(for consumer: String = "default") {
@@ -264,6 +402,7 @@ final class DashboardModel: ObservableObject {
         liveTimer?.invalidate()
         liveTimer = nil
         invalidateRecentClaudeAttempt()
+        invalidateRecentGeminiAttempt()
     }
 
     func stopAllLive() {
@@ -396,6 +535,21 @@ struct PrimarySourceActivityView: View {
                      ?? "Aucun événement daté sur cette période")
                     .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
             }
+            if model.primaryHistoryID == "gemini-cli" {
+                let snapshot = model.geminiQuotaSnapshot
+                if let win = snapshot?.readout?.primaryWindow {
+                    HStack(spacing: 6) {
+                        if snapshot?.isLastKnown == true {
+                            Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                        }
+                        Text("Quota 7 j · \(win.remainingPercent) % restants" + (win.resetsAt.map {
+                            " · jusqu’au \($0.formatted(.dateTime.day().month(.abbreviated).hour().minute()))"
+                        } ?? ""))
+                            .font(.system(size: 11, weight: .medium)).monospacedDigit()
+                            .foregroundStyle(InstrumentTheme.secondary)
+                    }
+                }
+            }
         }
         .help("\(SourceDisplay.name(model.primaryHistoryID)) · historique local indexé, pas un flux en direct ni un quota. \(model.primaryHistoryPending ? "Import récent incomplet. " : "")Dernier événement : \(reading?.lastEventAt?.formatted() ?? "aucun"). Index lu : \(model.primaryHistoryReadAt?.formatted() ?? "en attente"). \(reading?.lastProvenance ?? "Provenance indisponible")")
     }
@@ -484,11 +638,46 @@ struct CodexClaudePairOverview: View {
             ? "Dernier événement" : "Dernier relevé · événement"
         return "\(prefix) · \(date.formatted(.dateTime.day().month(.abbreviated).hour().minute()))"
     }
+    private var showsGemini: Bool {
+        preferences.visibleIDs.contains("gemini-cli")
+    }
+    private var geminiReading: PrimarySourceReadout? {
+        model.geminiReadout
+    }
+    private var geminiAmount: Double? {
+        guard let reading = geminiReading else { return nil }
+        return range.isOfficial ? reading.completeTotalTokens.map(Double.init) : reading.observedTokensPerSecond
+    }
+    private var geminiSummary: String {
+        if model.geminiHistoryLoading && (geminiReading == nil || geminiReading?.aggregate.records.isEmpty == true) {
+            return "Lecture d’Antigravity…"
+        }
+        guard let reading = geminiReading else {
+            if model.geminiHistoryError != nil { return "Historique indisponible" }
+            return model.geminiHistoryPending ? "Import récent en attente" : "Historique en attente"
+        }
+        if reading.aggregate.records.isEmpty {
+            if model.geminiHistoryError != nil { return "Historique indisponible" }
+            return model.geminiHistoryPending ? "Import récent en attente" : "Pas de mesure sur cette période"
+        }
+        return reading.completeTotalTokens.map {
+            "\(TokenDialGeometry.label(Double($0))) tokens · Antigravity local"
+        } ?? "Mesure partielle ou indisponible"
+    }
+    private var geminiLastEvent: String? {
+        if let reading = geminiReading, reading.aggregate.records.isEmpty,
+           let known = model.geminiLastKnownEventAt, known <= reading.periodStart {
+            return "Dernier événement · \(known.formatted(.dateTime.day().month(.abbreviated).hour().minute()))"
+        }
+        guard let date = geminiReading?.lastEventAt else { return nil }
+        return "Dernier événement · \(date.formatted(.dateTime.day().month(.abbreviated).hour().minute()))"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text("Codex + Claude Code").font(.system(size: 13, weight: .semibold, design: .rounded))
+                Text(showsGemini ? "Codex + Claude + Gemini" : "Codex + Claude Code")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
                 Spacer()
                 Text("MESURES SÉPARÉES").font(.system(size: 9, weight: .bold))
                     .foregroundStyle(InstrumentTheme.secondary)
@@ -517,9 +706,87 @@ struct CodexClaudePairOverview: View {
                     claudeQuota
                 }
             }
+            if showsGemini {
+                geminiInstrumentCard
+            }
         }
         .padding(10)
-        .help("Codex : événements locaux sur 1 min–24 h et journées du compte sur 7/30 j. Claude Code : tokens des sessions JSONL indexées, non live ; l’onglet Code de Claude Desktop est inclus lorsque ses sessions sont dans ces journaux locaux, mais pas les conversations Chat. Les quotas Claude restent des relevés distincts. Les cadences sont des moyennes ; aucun quota ou token n'est additionné.")
+        .help("Codex : événements locaux sur 1 min–24 h et journées du compte sur 7/30 j. Claude Code : tokens des sessions JSONL indexées. Gemini / Antigravity : tokens des journaux locaux, modèle parfois non fourni ; quota du modèle affiché via LanguageServer local. Les sources et leurs quotas restent séparés.")
+    }
+
+    private var geminiInstrumentCard: some View {
+        let unit = range.isOfficial ? "tokens" : "tokens/s"
+        let metricLabel = range.isOfficial ? "tokens observés" : "tokens/s · débit moyen"
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(geminiReading?.lastEventAt.map { Date().timeIntervalSince($0) < 120 } == true ? InstrumentTheme.mint : InstrumentTheme.secondary)
+                    .frame(width: 6, height: 6)
+                Text("Gemini / Antigravity")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(InstrumentTheme.blue)
+                Spacer()
+                Text("ANTIGRAVITY · DÉBIT & QUOTA")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(InstrumentTheme.secondary)
+            }
+            HStack(alignment: .center, spacing: 12) {
+                TokenInstrument(amount: geminiAmount, unit: unit, periodID: "pair-gemini-\(range.rawValue)")
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(geminiAmount.map(TokenDialGeometry.label) ?? "—")
+                        .font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text(metricLabel)
+                        .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                    Text(geminiSummary)
+                        .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    if let reading = geminiReading,
+                       let input = reading.aggregate.inputTokens.value,
+                       let output = reading.aggregate.outputTokens.value {
+                        let cached = reading.aggregate.cachedInputTokens.value ?? 0
+                        let direct = max(0, input - cached)
+                        Text("Entrée \(TokenDialGeometry.label(Double(direct))) · Cache \(TokenDialGeometry.label(Double(cached))) · Sortie \(TokenDialGeometry.label(Double(output)))")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(InstrumentTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let detail = geminiLastEvent {
+                        Text(detail)
+                            .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                            .lineLimit(1)
+                    }
+                    Divider().padding(.vertical, 2)
+                    geminiQuota
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(8)
+        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var geminiQuota: some View {
+        let snapshot = model.geminiQuotaSnapshot
+        let window = snapshot?.readout?.primaryWindow
+        return VStack(alignment: .leading, spacing: 2) {
+            if snapshot?.isLastKnown == true {
+                Label("Dernier relevé", systemImage: "clock")
+                    .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            }
+            Text("Quota · \(window.map { "\($0.remainingPercent) %" } ?? "— %") restants")
+                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+            if let window {
+                Text(window.label).font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let window, let reset = window.resetsAt {
+                Text("Réinit. \(reset.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            } else {
+                Text(window == nil ? "Quota Antigravity en attente" : "Réinit. non datée")
+                    .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            }
+        }
     }
 
     private func column<Quota: View>(name: String, amount: Double?, unit: String, metricLabel: String,
@@ -713,11 +980,17 @@ struct DashboardView: View {
             model.selectPrimarySource($0)
             syncRecentClaudeVisibility()
         }
+        .onChange(of: sourcePreferences.visibleIDs) { _ in
+            syncRecentClaudeVisibility()
+        }
         .onChange(of: model.selectedTab) {
             if $0 == .quota { sourcesModel.loadHistorical() }
             syncRecentClaudeVisibility()
         }
-        .onDisappear { model.setRecentClaudeVisible(false, for: recentClaudeConsumer) }
+        .onDisappear {
+            model.setRecentClaudeVisible(false, for: recentClaudeConsumer)
+            model.setRecentGeminiVisible(false, for: recentClaudeConsumer)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .arqmeterHistoryUpdated)) { _ in
             if model.selectedTab == .quota { sourcesModel.loadHistorical() }
         }
@@ -727,6 +1000,9 @@ struct DashboardView: View {
     private func syncRecentClaudeVisibility() {
         model.setRecentClaudeVisible(model.selectedTab == .direct &&
             sourcePreferences.selectedHistoryID == "claude-code", for: recentClaudeConsumer)
+        model.setRecentGeminiVisible(model.selectedTab == .direct &&
+            (sourcePreferences.visibleIDs.contains("gemini-cli") || sourcePreferences.selectedHistoryID == "gemini-cli"),
+            for: recentClaudeConsumer)
     }
 
     private var tabBar: some View {
