@@ -4,7 +4,7 @@ Un centre de pilotage macOS pour la consommation observée de Codex, Claude Code
 Gemini CLI et Ollama. Les sources restent séparées : les tokens ne sont pas un
 quota, et un ancien journal n'est pas une session en cours.
 
-## Sources 1.0.20 — préversion
+## Sources 1.0.25
 
 - Fenêtre historique de 420 × 650 points, ouverte directement depuis la barre
   de menus. Un nouveau clic la masque ou la rouvre ; déplacement par l'en-tête.
@@ -16,6 +16,11 @@ quota, et un ancien journal n'est pas une session en cours.
   accessibles. Aucune mesure manquante n'est inventée.
 - Quotas Codex et Claude côte à côte, jamais additionnés. Pour Claude : choix
   mémorisé **5 h**, **Semaine** ou **Les deux**, avec 5 h en premier.
+- Source principale mémorisée, affichage Codex + Claude et menu par clic droit :
+  réglages, source principale, détails et quitter sans relance automatique.
+- Projets regroupés avec choix de période : 1 min, 10 min, 1 h, 24 h, 7 j et 30 j.
+  Le suivi Claude récent relit les journaux locaux disponibles de Claude Code,
+  y compris l’onglet Code de Claude Desktop, sans fabriquer les mesures absentes.
 
 ### Analyse quotidienne dans la vue complète
 
@@ -70,8 +75,9 @@ rollback vers un ancien binaire.
 ### Interpréter les mesures
 
 Codex rapporte les tokens en fin de réponse, pas token par token pendant la
-génération. Les journaux locaux sont relus toutes les deux secondes pendant
-l'affichage, sans appel modèle. Le quota officiel est actualisé séparément ;
+génération. Les journaux locaux Codex sont relus toutes les deux secondes pendant
+l'affichage ; le suivi récent Claude est borné à une relecture toutes les quinze
+secondes, sans appel modèle. Le quota officiel est actualisé séparément ;
 les tokens locaux ne se convertissent pas en pourcentage de quota.
 
 Les conseils distinguent contexte traité, cache lu et entrée hors cache avec
@@ -84,25 +90,35 @@ Une connexion Codex ne fournit pas ces compteurs.
 
 ## Construire et vérifier
 
-Swift Package Manager, sans dépendance Swift tierce. Xcode/SDK macOS 26 ou plus
+Swift Package Manager avec Sparkle 2.10.0 épinglé. Xcode/SDK macOS 26 ou plus
 récent requis pour compiler les API de verre ; cible déclarée macOS 13 avec
 matériau de repli. Les anciennes versions n'ont pas été recettées sur un autre Mac.
 
 ```sh
 swift test
 zsh scripts/build.sh
-open build/Arqmeter.app
+# Candidat temporaire : Products.noindex/Arqmeter-UpdaterCandidate.app
 ```
 
-Avant d'utiliser le pont, installer le bundle construit dans
+Le build embarque Sparkle 2.10.0 épinglé et vérifie les liens/signatures du bundle.
+Il préserve un candidat déjà présent au lieu de le remplacer silencieusement.
+« Rechercher les mises à jour… » est accessible par clic droit dans la barre.
+Le flux HTTPS signé et la clé publique de publication ne sont pas configurés :
+le candidat n’installe donc rien. Voir [le handoff updater](UPDATER-HANDOFF.md).
+L’application installée n’est pas remplacée par ces commandes ; ne pas lancer
+une seconde instance pendant une recette. La production nécessite Developer ID,
+notarisation, flux signé et version de build incrémentée.
+
+Avant d'utiliser le pont, installer explicitement le bundle construit dans
 $HOME/Applications/Arqmeter.app, après avoir arrêté votre seule instance Arqmeter
-et conservé une copie du binaire précédent. Ne pas remplacer ni restaurer vos bases
+et vérifié un point de retour existant du binaire précédent. Ne pas multiplier
+les copies d’application. Ne pas remplacer ni restaurer vos bases
 de données. Ne pas lancer plusieurs copies simultanément.
 
 Validation : tests moteur, autotests du binaire, tests du pont et signature ad hoc
 sont distincts d'une observation native et d'une acceptation visuelle. Les tests
 utilisent des exemples construits ; aucun reçu de compte réel n'est publié.
-La passe 1.0.20 couvre 192 tests Swift, 10 tests du mod et les contrôles hors réseau
+La suite 1.0.25 couvre 226 tests Swift, les tests du mod et les contrôles hors réseau
 de présentation, cadrans, statistiques, comparaison, quota, barre et extracteur DOM.
 La recette d'analyse vérifie aussi la sélection de source, mesure et dossier,
 les réponses asynchrones dépassées et les états vides, sans requête de compte réel.

@@ -35,6 +35,20 @@ final class ProjectActivityPresentation: ObservableObject {
             return $0.total == $1.total ? $0.id < $1.id : $0.total > $1.total
         }
     }
+
+    static func events(_ events: [LocalTokenEvent], in range: ConsumptionRange,
+                       endingAt end: Date) -> [LocalTokenEvent] {
+        let start = end.addingTimeInterval(-range.historicalDuration)
+        return events.filter { $0.date > start && $0.date <= end }
+    }
+
+    static func events(_ activity: HistoricalCodexProjectActivity) -> [LocalTokenEvent] {
+        activity.events.map { event in
+            LocalTokenEvent(date: event.lastEvent, project: "", projectPath: event.projectPath ?? "",
+                session: event.sessionID, input: event.input, output: event.output,
+                cached: event.cachedInput ?? 0, cachedObserved: event.cachedInput != nil)
+        }
+    }
 }
 
 enum ProjectActivitySelfTest {
@@ -55,6 +69,27 @@ enum ProjectActivitySelfTest {
               model.groups([]).isEmpty else {
             throw NSError(domain: "ProjectActivitySelfTest", code: 1)
         }
+        let end = Date(timeIntervalSince1970: 2_000_000)
+        let boundary = [
+            LocalTokenEvent(date: end.addingTimeInterval(-60), project: "", projectPath: "/fixture/project-alpha",
+                session: "old", input: 10, output: 1, cached: 0, cachedObserved: true),
+            LocalTokenEvent(date: end.addingTimeInterval(-59), project: "", projectPath: "/fixture/project-alpha",
+                session: "recent", input: 20, output: 2, cached: 0, cachedObserved: true),
+            LocalTokenEvent(date: end, project: "", projectPath: "", session: "unknown",
+                input: 3, output: 1, cached: 0, cachedObserved: true),
+            LocalTokenEvent(date: end.addingTimeInterval(1), project: "", projectPath: "",
+                session: "future", input: 100, output: 1, cached: 0, cachedObserved: true)
+        ]
+        let minute = ProjectActivityPresentation.events(boundary, in: .minute, endingAt: end)
+        let day = ProjectActivityPresentation.events(boundary, in: .day, endingAt: end)
+        guard minute.count == 2, minute.reduce(0, { $0 + $1.total }) == 26,
+              day.count == 3, day.reduce(0, { $0 + $1.total }) == 37,
+              ConsumptionRange.week.historicalDuration == 7 * 24 * 60 * 60,
+              ConsumptionRange.month.historicalDuration == 30 * 24 * 60 * 60,
+              model.groups(minute).reduce(0, { $0 + $1.total }) == 26,
+              model.groups([]).isEmpty else {
+            throw NSError(domain: "ProjectActivitySelfTest", code: 2)
+        }
     }
 }
 
@@ -63,9 +98,21 @@ struct ProjectListPanel: View {
     let now: Date
     @StateObject private var presentation = ProjectActivityPresentation()
     @AppStorage("projects.showConversations") private var showConversations = false
+    @State private var range: ConsumptionRange = .day
+    @State private var historical: HistoricalCodexProjectActivity?
+    @State private var historicalError: String?
+    @State private var historicalLoading = false
+    @State private var historicalReadAt: Date?
+    @State private var historicalWindowEnd: Date?
+    @State private var historyRequestID = UUID()
+    private var usesHistoricalIndex: Bool { range == .week || range == .month }
 
     var body: some View {
-        let groups = presentation.groups(local?.events ?? [])
+        let events = usesHistoricalIndex ? historical.map(ProjectActivityPresentation.events) ?? [] :
+            ProjectActivityPresentation.events(local?.events ?? [], in: range,
+                endingAt: local?.sampledAt ?? now)
+        let groups = presentation.groups(events)
+        let maximum = groups.map(\.total).max() ?? 1
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Label("Mes projets", systemImage: "folder.fill")
@@ -77,23 +124,50 @@ struct ProjectListPanel: View {
                 .menuStyle(.borderlessButton).fixedSize()
                 .accessibilityLabel("Options des projets")
             }
-            Text("Dernières 24 h · Codex sur ce Mac")
+            HStack(spacing: 4) {
+                ForEach(ConsumptionRange.allCases) { choice in
+                    Button(choice.label) { range = choice }
+                        .font(.system(size: 10, weight: range == choice ? .bold : .medium))
+                        .frame(maxWidth: .infinity).padding(.vertical, 6)
+                        .background(range == choice ? InstrumentTheme.blue.opacity(0.23) : .white.opacity(0.035),
+                                    in: RoundedRectangle(cornerRadius: 7))
+                }
+            }
+            .buttonStyle(.plain)
+            Text("\(range.title) · Codex sur ce Mac")
                 .font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
-            if let local, !local.scanComplete || !ControlReadout.isFresh(local.sampledAt, now: now, within: 10) {
+                .help(usesHistoricalIndex
+                    ? "Événements locaux indexés, sans répartition des journées du compte. Fenêtre arrêtée à \(historicalWindowEnd?.formatted() ?? "—") ; dernier index à \(historical?.lastScan?.formatted() ?? "—") ; lu à \(historicalReadAt?.formatted() ?? "—")."
+                    : "Événements Codex locaux mesurés sur \(range.label).")
+            if usesHistoricalIndex {
+                if historicalLoading && historical == nil {
+                    Text("Lecture de l’index local…")
+                        .font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
+                } else if historicalLoading {
+                    Text("Actualisation de l’index…")
+                        .font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
+                }
+                if historical != nil && (historical?.scanComplete != true || historicalError != nil) {
+                    Label(historicalError == nil ? "Couverture locale partielle" : "Dernier relevé · lecture partielle",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 12)).foregroundStyle(InstrumentTheme.alert)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if let local, !local.scanComplete || !ControlReadout.isFresh(local.sampledAt, now: now, within: 10) {
                 Label(local.scanComplete ? "Relevé ancien · actualisation en cours" : "Lecture partielle",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 12)).foregroundStyle(InstrumentTheme.alert)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if groups.isEmpty {
-                Text(local == nil ? "Lecture de l’activité…" : "Aucune consommation relevée sur cette période.")
+                Text(emptyLabel)
                     .font(.system(size: 13)).foregroundStyle(InstrumentTheme.secondary)
                     .padding(.vertical, 20)
             } else {
-                Text("TOKENS TRAITÉS · CACHE INCLUS")
+                Text("TOKENS OBSERVÉS · CACHE INCLUS")
                     .font(.system(size: 10, weight: .medium)).foregroundStyle(InstrumentTheme.secondary)
                 ForEach(groups) { group in
-                    projectRow(group, maximum: groups.map(\.total).max() ?? 1)
+                    projectRow(group, maximum: maximum)
                     if group.id != groups.last?.id {
                         Rectangle().fill(.white.opacity(0.08)).frame(height: 0.7)
                     }
@@ -101,7 +175,59 @@ struct ProjectListPanel: View {
             }
         }
         .padding(16).glassCard()
-        .onAppear { presentation.reload() }
+        .onAppear {
+            presentation.reload()
+            if usesHistoricalIndex { refreshHistorical() }
+        }
+        .onChange(of: range) { _ in
+            historyRequestID = UUID()
+            historical = nil
+            historicalError = nil
+            historicalLoading = false
+            historicalReadAt = nil
+            historicalWindowEnd = nil
+            if usesHistoricalIndex { refreshHistorical() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .arqmeterHistoryUpdated)) { _ in
+            if usesHistoricalIndex { refreshHistorical() }
+        }
+        .onDisappear { historyRequestID = UUID() }
+    }
+
+    private var emptyLabel: String {
+        if usesHistoricalIndex {
+            if historicalLoading && historical == nil { return "Lecture de l’index local…" }
+            if historical == nil { return historicalError ?? "Historique local indisponible" }
+            if historicalError != nil { return "Aucun événement du dernier relevé · actualisation impossible." }
+            return historical?.scanComplete == true ? "Aucun événement indexé sur cette période."
+                : "Aucun événement indexé · couverture locale partielle."
+        }
+        if local == nil { return "Lecture de l’activité…" }
+        if !ControlReadout.isFresh(local?.sampledAt, now: now, within: 10) {
+            return "Aucun événement du dernier relevé · actualisation en cours."
+        }
+        return local?.scanComplete == true ? "Aucune consommation relevée sur cette période."
+            : "Aucun événement relevé · lecture partielle."
+    }
+
+    private func refreshHistorical() {
+        let requestID = UUID()
+        historyRequestID = requestID
+        historicalLoading = true
+        let selectedRange = range
+        let end = Date()
+        HistoricalUsageService.shared.codexProjectActivity(
+            from: end.addingTimeInterval(-selectedRange.historicalDuration), to: end
+        ) { activity, error in
+            guard historyRequestID == requestID, range == selectedRange else { return }
+            if let activity {
+                historical = activity
+                historicalReadAt = Date()
+                historicalWindowEnd = end
+            }
+            historicalError = error
+            historicalLoading = false
+        }
     }
 
     private func projectRow(_ group: ProjectActivityGroup, maximum: Int64) -> some View {
@@ -149,7 +275,7 @@ struct ProjectListPanel: View {
             }
         }
         .padding(.vertical, 4)
-        .help("\(group.project.provenance)\n\(group.project.path)\n\(group.total.formatted()) tokens · 24 h · ce Mac")
+        .help("\(group.project.provenance)\n\(group.project.path)\n\(group.total.formatted()) tokens · \(range.label) · ce Mac")
     }
 
     private func compact(_ value: Int64) -> String {

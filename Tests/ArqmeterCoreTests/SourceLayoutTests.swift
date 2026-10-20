@@ -66,4 +66,20 @@ final class SourceLayoutTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "quotaMonth"), "2025-12")
         XCTAssertEqual(defaults.string(forKey: "readingMode"), "detailed")
     }
+
+    func testPairPresentationPreferenceIsDistinctFromLegacyHarnessChoice() throws {
+        let name = "com.7agency.arqmeter.tests.pair." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set("ollama", forKey: "primarySourceID")
+        defaults.set(["ollama", "codex", "claude-code"], forKey: "orderedSourceIDs")
+        XCTAssertEqual(SourcePresentationMode.load(from: defaults), .single)
+        SourcePresentationMode.codexAndClaude.save(to: defaults)
+        XCTAssertEqual(SourcePresentationMode.load(from: defaults), .codexAndClaude)
+        XCTAssertEqual(SourceLayout.load(from: defaults).primaryID, "ollama")
+        XCTAssertEqual(Array(SourceLayout.load(from: defaults).orderedIDs.prefix(3)), ["ollama", "codex", "claude-code"])
+        defaults.set("unknown-future-mode", forKey: SourcePresentationMode.defaultsKey)
+        XCTAssertEqual(SourcePresentationMode.load(from: defaults), .single)
+        XCTAssertEqual(defaults.string(forKey: "primarySourceID"), "ollama")
+    }
 }

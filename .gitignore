@@ -7,6 +7,7 @@
 !RELEASE.json
 !SHA256SUMS
 !Package.swift
+!Package.resolved
 !VERSION
 !Sources/
 !Sources/**
@@ -14,12 +15,16 @@
 !Tests/**
 !Resources/
 !Resources/Info.plist
+!Resources/com.7agency.arqmeter.launchagent.plist
 !Resources/claude-statusline-fragment.sh
 !Resources/claude-official-usage.js
 !scripts/
 !scripts/build.sh
 !scripts/update-lib.sh
 !scripts/test-claude-official-usage.mjs
+!scripts/build-updater-candidate.sh
+!scripts/test-updater-signatures.swift
+!UPDATER-HANDOFF.md
 !.claude-plugin/
 !.claude-plugin/marketplace.json
 !plugins/

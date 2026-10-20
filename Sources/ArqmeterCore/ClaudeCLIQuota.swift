@@ -39,6 +39,8 @@ public struct ClaudeCLIQuotaReport: Codable, Equatable, Sendable {
         public let expiresAt: Date?
         public var remainingPercent: Int { Int((100 - usedPercent).rounded(.down)) }
     }
+    /// For get_usage control responses this is local receipt time, not a
+    /// certified server observation timestamp.
     public let observedAt: Date
     public let session: Window?
     public let weekly: Window?
@@ -106,15 +108,32 @@ public struct ClaudeCLIQuotaReport: Codable, Equatable, Sendable {
         return Self(observedAt: observedAt, session: session, weekly: weekly)
     }
     public func currentWindow(_ period: ClaudeQuotaReport.Period, at now: Date) -> Window? {
+        // The native handler may have returned a snapshot or a seeded value.
+        // Include legacy "-live" caches in this guard: their provenance was
+        // never sufficient to establish a fresh server observation.
+        guard !isGetUsageControlReceipt else { return nil }
         let age = now.timeIntervalSince(observedAt)
         guard age >= -5, age < 180, let value = period == .fiveHour ? session : weekly,
               value.usedPercent.isFinite, (0...100).contains(value.usedPercent), value.expiresAt.map({ $0 > now }) ?? true else { return nil }
         return value
     }
     public var provenance: String {
-        transportKind == "official-get-usage-live"
-            ? "Claude Code · quota officiel reçu du serveur"
+        isGetUsageControlReceipt
+            ? "Claude Code · réponse get_usage · fraîcheur serveur inconnue"
             : "Claude Code · /usage officiel · fraîcheur serveur non fournie"
+    }
+    private var isGetUsageControlReceipt: Bool { transportKind?.hasPrefix("official-get-usage") == true }
+
+    /// A repeated control response may be a cached snapshot. Preserve the
+    /// earlier local receipt time unless the measured windows/reset or plan
+    /// changes. Never compare or merge it with a passive Mod receipt.
+    public func preservingEarlierMatchingControlReceipt(_ previous: Self?) -> Self {
+        guard isGetUsageControlReceipt, let previous, previous.isGetUsageControlReceipt,
+              previous.observedAt <= observedAt,
+              previous.subscriptionType == subscriptionType,
+              previous.session == session, previous.weekly == weekly else { return self }
+        return Self(observedAt: previous.observedAt, session: session, weekly: weekly,
+                    transportKind: transportKind, subscriptionType: subscriptionType)
     }
     public static var cacheURL: URL { ClaudeQuotaReport.cacheURL.deletingLastPathComponent().appendingPathComponent("claude-cli-official-quota.json") }
     public static func read(url: URL = cacheURL) -> Self? {
@@ -135,17 +154,36 @@ public struct ClaudeCLIRefreshPolicy: Codable, Equatable, Sendable {
     public private(set) var lastAttemptAt: Date?
     public private(set) var failure: ClaudeCLIQuotaReport.Failure?
     public private(set) var failures = 0
+    /// Optional metadata keeps legacy policy JSON readable. These identify a
+    /// local app attempt, never a Claude account or server observation.
+    public private(set) var instanceID: String?
+    public private(set) var attemptID: String?
+    public private(set) var localCompletedAt: Date?
+    public private(set) var serverTimestampStatus: String?
     public init() {}
     public func permits(at now: Date) -> Bool { nextAttemptAt.map { now >= $0 } ?? true }
-    public mutating func record(_ error: ClaudeCLIQuotaReport.Failure?, at now: Date) {
+    public mutating func record(_ error: ClaudeCLIQuotaReport.Failure?, at now: Date,
+                                instanceID: String? = nil, attemptID: String? = nil) {
         let previousFailure = failure, previousDeadline = nextAttemptAt
         lastAttemptAt = now; failure = error
+        if let instanceID, let attemptID {
+            self.instanceID = instanceID; self.attemptID = attemptID
+            localCompletedAt = now; serverTimestampStatus = "unknown"
+        }
         failures = error == nil ? 0 : error == previousFailure ? min(6, failures + 1) : 1
         let delay: Double = error == nil ? 120 : error == .limited ? min(3600, 600 * pow(2, Double(failures - 1))) : min(1800, 120 * pow(2, Double(failures - 1)))
         nextAttemptAt = now.addingTimeInterval(delay)
         if error != nil, previousFailure == .limited, let previousDeadline, previousDeadline > nextAttemptAt! {
             nextAttemptAt = previousDeadline
         }
+    }
+    public func save(url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let data = try JSONEncoder().encode(self)
+        guard data.count <= 4096 else { throw ClaudeCLIReaderLease.ReaderStoreError.invalidPolicy }
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
 

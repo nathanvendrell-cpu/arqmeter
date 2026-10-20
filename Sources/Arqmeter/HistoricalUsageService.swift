@@ -20,8 +20,9 @@ struct HistoricalDashboardSnapshot {
     let error: String?
 }
 
-/// Runs outside the status-item's live 2-second loop. It never contacts a model
-/// or an external service, and the timer is cancelled on app termination.
+/// The complete inventory runs on its own 120-second timer. A visible Claude
+/// readout may request a bounded tail on the same serial queue from the
+/// existing live tick. Neither path contacts a model or external service.
 final class HistoricalUsageService {
     static let shared = HistoricalUsageService()
     private let queue = DispatchQueue(label: "com.7agency.arqmeter.history", qos: .utility)
@@ -152,6 +153,67 @@ final class HistoricalUsageService {
                 } else { records = []; errorMessage = "Historique local pas encore disponible" }
             } catch { records = []; errorMessage = "Lecture de cette période impossible" }
             DispatchQueue.main.async { completion(records, errorMessage) }
+        }
+    }
+
+    /// Reduced local Codex events for 7/30-day project periods. The 120-second
+    /// importer remains the sole source of these indexed records.
+    func codexProjectActivity(from start: Date, to end: Date,
+                              completion: @escaping (HistoricalCodexProjectActivity?, String?) -> Void) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let activity: HistoricalCodexProjectActivity?, errorMessage: String?
+            do {
+                guard let store = self.engine?.store else {
+                    DispatchQueue.main.async { completion(nil, "Historique local pas encore disponible") }
+                    return
+                }
+                activity = try store.codexProjectActivity(from: start, to: end)
+                errorMessage = nil
+            } catch {
+                activity = nil
+                errorMessage = "Lecture des projets impossible"
+            }
+            DispatchQueue.main.async { completion(activity, errorMessage) }
+        }
+    }
+
+    /// Foreground Claude tail + indexed read on the existing serial SQLite
+    /// queue. No quota request, independent scanner or coverage publication.
+    func recentClaudeRecords(duration: TimeInterval,
+                             completion: @escaping ([UnifiedUsageRecord], String?, Date, Bool, Date?) -> Void) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let records: [UnifiedUsageRecord], errorMessage: String?
+            do {
+                guard let engine = self.engine else {
+                    DispatchQueue.main.async { completion([], "Historique local pas encore disponible", Date(), true, nil) }
+                    return
+                }
+                let result = try engine.scanRecentClaude()
+                // Date the window after the queued scan. A 120-second
+                // inventory may have occupied this same serial queue since
+                // the UI requested the pass.
+                let end = Date()
+                records = try engine.store.records(harness: "claude-code",
+                    from: end.addingTimeInterval(-duration), to: end)
+                let lastKnownAt: Date?
+                let lastDateUnavailable: Bool
+                do {
+                    lastKnownAt = try engine.store.latestEventDate(harness: "claude-code")
+                        .flatMap { $0 <= end ? $0 : nil }
+                    lastDateUnavailable = false
+                } catch {
+                    lastKnownAt = nil
+                    lastDateUnavailable = true
+                }
+                errorMessage = result.readFailures > 0 ? "Lecture récente de Claude partielle" :
+                    result.diagnostic == "Source absente ou illisible" ? result.diagnostic :
+                    lastDateUnavailable ? "Date du dernier événement indisponible" : nil
+                DispatchQueue.main.async { completion(records, errorMessage, end, result.pendingRecentWork, lastKnownAt) }
+            } catch {
+                DispatchQueue.main.async { completion([], "Lecture récente de Claude impossible", Date(), true, nil) }
+            }
         }
     }
 

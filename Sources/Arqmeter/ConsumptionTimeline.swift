@@ -64,6 +64,12 @@ enum ConsumptionRange: String, CaseIterable, Identifiable {
     }
 
     var isOfficial: Bool { localDuration == nil }
+
+    /// Rolling local-log window for non-Codex harnesses. The 7/30-day Codex
+    /// account series is a separate source and must never be reused here.
+    var historicalDuration: TimeInterval {
+        localDuration ?? Double(self == .week ? 7 : 30) * 24 * 60 * 60
+    }
 }
 
 struct ConsumptionBucket: Identifiable {

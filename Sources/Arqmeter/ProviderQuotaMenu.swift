@@ -7,17 +7,30 @@ import ArqmeterCore
                       codexReset: Date?, claude: ClaudeQuotaReport?, now: Date,
                       orderedIDs: [String] = ["claude-code", "codex"],
                       claudeMode: ClaudeMenuQuotaMode = .both,
-                      cli: ClaudeCLIQuotaReport? = ClaudeCLIQuotaReport.read()) {
+                      cli: ClaudeCLIQuotaReport? = ClaudeCLIQuotaReport.read(),
+                      primaryID: String? = nil, primaryReadout: PrimarySourceReadout? = nil) {
         let codex = ControlReadout.quota(codexRemaining, sampledAt: codexSampledAt, now: now, resetsAt: codexReset)
         let snapshot = ClaudeMenuQuotaSnapshot.make(statusLine: claude, cli: cli, at: now)
         let readout = snapshot.readout
         let claudeText = claudeMode.text(readout: readout) ?? ClaudeCLIQuotaReader.shared.compactState
         let codexText = codex.map { "\($0) %" } ?? "— %"
+        let displayOrder: [String]
+        if let primaryID, orderedIDs.contains(primaryID) {
+            displayOrder = [primaryID] + orderedIDs.filter { $0 != primaryID }
+        } else {
+            displayOrder = orderedIDs
+        }
+        let primaryMetric: String? = {
+            guard let primaryID, primaryReadout?.harnessID == primaryID else { return nil }
+            if let total = primaryReadout?.completeTotalTokens { return TokenDialGeometry.label(Double(total)) + " t" }
+            if let seconds = primaryReadout?.aggregate.durationSeconds { return seconds.formatted(.number.precision(.fractionLength(0...1))) + " s" }
+            return nil
+        }()
         button.title = ""
         button.imagePosition = .imageOnly
         button.effectiveAppearance.performAsCurrentDrawingAppearance {
-            button.image = image(claude: claudeText, codex: codexText, orderedIDs: orderedIDs, claudeMode: claudeMode,
-                                 claudeIsLastKnown: snapshot.isLastKnown)
+            button.image = image(claude: claudeText, codex: codexText, orderedIDs: displayOrder, claudeMode: claudeMode,
+                                 claudeIsLastKnown: snapshot.isLastKnown, primaryID: primaryID, primaryMetric: primaryMetric)
         }
         let date = DateFormatter(); date.locale = Locale(identifier: "fr_FR"); date.dateFormat = "d MMM à HH:mm"
         let claudeTip: String
@@ -35,11 +48,13 @@ import ArqmeterCore
             claudeTip = "Claude Code · \(claudeMode.periods.map { $0.rawValue }.joined(separator: " puis ")) · " + ClaudeCLIQuotaReader.shared.state
         }
         let codexTip = codex.map { "Codex · \($0) % restants · 7 jours" + (codexReset.map { " · reset \(date.string(from: $0))" } ?? "") } ?? "Codex · quota officiel absent ou périmé"
-        let tips = orderedIDs.map { id in
+        let tips = displayOrder.map { id in
             switch id {
             case "claude-code": return claudeTip
             case "codex": return codexTip
-            default: return SourceDisplay.name(id) + " · activité locale dans ARQMETER · quota non fourni"
+            default:
+                let metric = id == primaryID ? primaryMetric.map { " · \($0) observés dans l’historique local" } ?? " · mesure indisponible" : ""
+                return SourceDisplay.name(id) + metric + " · quota non fourni"
             }
         }
         button.toolTip = tips.joined(separator: "\n") + "\nCliquer pour afficher ou masquer ARQMETER. Quotas séparés, jamais additionnés."
@@ -47,7 +62,8 @@ import ArqmeterCore
     }
 
     private static func image(claude: String, codex: String, orderedIDs: [String] = ["claude-code", "codex"],
-                              claudeMode: ClaudeMenuQuotaMode = .both, claudeIsLastKnown: Bool = false) -> NSImage {
+                              claudeMode: ClaudeMenuQuotaMode = .both, claudeIsLastKnown: Bool = false,
+                              primaryID: String? = nil, primaryMetric: String? = nil) -> NSImage {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
         let slot = ceil(("100 %" as NSString).size(withAttributes: attributes).width)
@@ -59,7 +75,8 @@ import ArqmeterCore
         let entries = orderedIDs.filter(SourceDisplay.order.contains).map { id -> (CGPath?, String, CGFloat) in
             if id == "claude-code" { return (ProviderMenuGlyphs.claude, claude, 19 + claudeSlot) }
             if id == "codex" { return (ProviderMenuGlyphs.codex, codex, 19 + slot) }
-            let label = id == "ollama" ? "Ollama" : "Gemini"
+            let label = (id == "ollama" ? "Ollama" : "Gemini") +
+                (id == primaryID ? " \(primaryMetric ?? "—")" : "")
             return (nil, label, ceil((label as NSString).size(withAttributes: attributes).width))
         }
         let size = NSSize(width: entries.reduce(12) { $0 + $1.2 } + CGFloat(max(0, entries.count - 1)) * 16, height: 22)

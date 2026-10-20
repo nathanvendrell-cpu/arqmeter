@@ -340,12 +340,15 @@ final class OfficialUsageMonitor {
     private let nativeQA: Bool
     private var qaAnchor: NSButton?
     private let sourcePreferences = SourceDisplayPreferences.shared
+    private var lastClaudeVisible: Bool?
     private let popover = NSPopover()
     private var controlWindow: NSWindow?
     private var codexWindow: NSWindow?
     private var statusTimer: Timer?
     private var presentationConfigured = false
     private var quotaWakeObserver: NSObjectProtocol?
+    private var historyObserver: NSObjectProtocol?
+    private lazy var appUpdater = ArqmeterUpdater()
 
     init(qaDashboard: DashboardModel? = nil) {
         nativeQA = qaDashboard != nil
@@ -379,6 +382,8 @@ final class OfficialUsageMonitor {
         guard !presentationConfigured else { return }
         presentationConfigured = true
         if !nativeQA {
+            appUpdater.startIfConfigured()
+            lastClaudeVisible = sourcePreferences.visibleIDs.contains("claude-code")
             ClaudeCLIQuotaReader.shared.startIfSelected()
             quotaWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
                 object: nil, queue: .main) { _ in MainActor.assumeIsolated {
@@ -388,7 +393,8 @@ final class OfficialUsageMonitor {
             statusItem.button?.title = "— %"
             statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
             statusItem.button?.target = self
-            statusItem.button?.action = #selector(toggleDashboard)
+            statusItem.button?.action = #selector(statusItemClicked(_:))
+            statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         // Remain visible when the user works elsewhere; native focus events
         // reduce the glass coverage. The menu counter remains the hide toggle.
@@ -406,8 +412,19 @@ final class OfficialUsageMonitor {
             return
         }
         sourcePreferences.onChange = { [weak self] in
-            ClaudeCLIQuotaReader.shared.startIfSelected()
-            self?.updateStatusTitle()
+            guard let self else { return }
+            let claudeVisible = self.sourcePreferences.visibleIDs.contains("claude-code")
+            if self.lastClaudeVisible != claudeVisible {
+                self.lastClaudeVisible = claudeVisible
+                ClaudeCLIQuotaReader.shared.startIfSelected()
+            }
+            self.dashboard.selectPrimarySource(self.sourcePreferences.selectedHistoryID)
+            self.updateStatusTitle()
+        }
+        dashboard.selectPrimarySource(sourcePreferences.selectedHistoryID)
+        historyObserver = NotificationCenter.default.addObserver(forName: .arqmeterHistoryUpdated,
+            object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dashboard.refreshPrimaryHistory(preservingCurrent: true) }
         }
         statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusTitle() }
@@ -456,6 +473,65 @@ final class OfficialUsageMonitor {
         }
     }
 
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        guard let event = NSApp.currentEvent, event.type == .rightMouseUp else {
+            toggleDashboard()
+            return
+        }
+        let menu = NSMenu(title: "ARQMETER")
+        menu.autoenablesItems = false
+        let settings = NSMenuItem(title: "Réglages…", action: #selector(openSourceSettingsFromMenu), keyEquivalent: "")
+        settings.target = self
+        menu.addItem(settings)
+        let sourceItem = NSMenuItem(title: "Source principale", action: nil, keyEquivalent: "")
+        let sourceMenu = NSMenu(title: "Source principale")
+        for id in sourcePreferences.orderedVisibleIDs {
+            let item = NSMenuItem(title: SourceDisplay.name(id), action: #selector(selectPrimaryFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            item.state = !sourcePreferences.showsCodexAndClaude && id == sourcePreferences.primaryID ? .on : .off
+            sourceMenu.addItem(item)
+        }
+        if sourcePreferences.visibleIDs.isSuperset(of: ["codex", "claude-code"]) {
+            sourceMenu.addItem(.separator())
+            let pair = NSMenuItem(title: "Codex + Claude", action: #selector(selectPairFromMenu), keyEquivalent: "")
+            pair.target = self
+            pair.state = sourcePreferences.showsCodexAndClaude ? .on : .off
+            sourceMenu.addItem(pair)
+        }
+        sourceItem.submenu = sourceMenu
+        menu.addItem(sourceItem)
+        let details = NSMenuItem(title: "Voir les détails", action: #selector(openDetailsFromMenu), keyEquivalent: "")
+        details.target = self
+        menu.addItem(details)
+        menu.addItem(.separator())
+        appUpdater.addMenuItems(to: menu)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quitter ARQMETER", action: #selector(quitFromStatusMenu), keyEquivalent: "")
+        quit.target = self
+        menu.addItem(quit)
+        NSMenu.popUpContextMenu(menu, with: event, for: sender)
+    }
+
+    @objc private func selectPrimaryFromMenu(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String else { return }
+        sourcePreferences.setPrimary(id)
+    }
+
+    @objc private func selectPairFromMenu() { sourcePreferences.showCodexAndClaude() }
+
+    @objc private func openSourceSettingsFromMenu() {
+        dashboard.requestSourceSettings()
+        openControlCenter()
+    }
+
+    @objc private func openDetailsFromMenu() { openControlCenter() }
+
+    /// A normal exit is deliberately not a failure. The release LaunchAgent
+    /// uses KeepAlive/SuccessfulExit=false; an unconditional KeepAlive=true job
+    /// must be replaced at install time before this action is used in runtime.
+    @objc private func quitFromStatusMenu() { NSApp.terminate(nil) }
+
     func popoverDidClose(_ notification: Notification) {
         dashboard.stopLive(for: "menu")
     }
@@ -489,10 +565,19 @@ final class OfficialUsageMonitor {
     private func updateStatusTitle() {
         guard !nativeQA else { return }
         guard let button = statusItem?.button else { return }
+        let now = Date()
+        let claude = ClaudeQuotaReport.read()
+        let cli = ClaudeCLIQuotaReport.read()
+        if sourcePreferences.showsCodexAndClaude {
+            dashboard.applyClaudeQuota(statusLine: claude, cli: cli, at: now)
+        }
         ProviderQuotaMenu.apply(to: button, codexRemaining: dashboard.remainingPercent,
             codexSampledAt: dashboard.officialSampledAt, codexReset: dashboard.resetsAt,
-            claude: ClaudeQuotaReport.read(), now: Date(), orderedIDs: sourcePreferences.orderedVisibleIDs,
-            claudeMode: sourcePreferences.claudeQuotaMode)
+            claude: claude, now: now, orderedIDs: sourcePreferences.menuDisplayOrder,
+            claudeMode: sourcePreferences.claudeQuotaMode,
+            cli: cli,
+            primaryID: sourcePreferences.showsCodexAndClaude ? nil : sourcePreferences.primaryID,
+            primaryReadout: sourcePreferences.showsCodexAndClaude ? nil : dashboard.primaryReadout)
     }
 
     private func openControlCenter() {
@@ -577,6 +662,7 @@ final class OfficialUsageMonitor {
 
     func applicationWillTerminate(_ notification: Notification) {
         if let quotaWakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(quotaWakeObserver) }
+        if let historyObserver { NotificationCenter.default.removeObserver(historyObserver) }
         ClaudeCLIQuotaReader.shared.stop(waitForCleanup: true)
         statusTimer?.invalidate()
         statusTimer = nil
@@ -586,7 +672,10 @@ final class OfficialUsageMonitor {
     }
 }
 
-if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa", CommandLine.arguments.count == 1 {
+if CommandLine.arguments == [CommandLine.arguments[0], "--updater-self-test"] {
+    do { try MainActor.assumeIsolated { try ArqmeterUpdater.selfTest() }; print("Updater menu/comparator self-test passed; no update checked or installed."); exit(EXIT_SUCCESS) }
+    catch { fputs("Updater self-test failed\n", stderr); exit(EXIT_FAILURE) }
+} else if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa", CommandLine.arguments.count == 1 {
     let database = (Bundle.main.object(forInfoDictionaryKey: "ARQProviderQAHistoryPath") as? String).map { URL(fileURLWithPath: $0) }
         ?? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("provider-qa-history.sqlite3")
     do { try MainActor.assumeIsolated { try ProviderLayoutRecipe.native(database: database) }; exit(EXIT_SUCCESS) }
@@ -720,6 +809,15 @@ if Bundle.main.bundleIdentifier == "com.7agency.arqmeter.providerlayoutnativeqa"
         fputs("Échec des tests de présentation : \(error)\n", stderr)
         exit(EXIT_FAILURE)
     }
+} else if CommandLine.arguments.contains("--primary-source-self-test") {
+    do { try PrimarySourceRecipe.selfTest(); exit(EXIT_SUCCESS) }
+    catch { fputs("Échec du test source principale : \(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--primary-pair-self-test") {
+    do { try PrimaryPairRecipe.selfTest(); exit(EXIT_SUCCESS) }
+    catch { fputs("Échec du test Codex + Claude : \(error)\n", stderr); exit(EXIT_FAILURE) }
+} else if CommandLine.arguments.contains("--claude-recent-self-test") {
+    do { try ClaudeRecentRecipe.selfTest(); exit(EXIT_SUCCESS) }
+    catch { fputs("Échec du test Claude récent : \(error)\n", stderr); exit(EXIT_FAILURE) }
 } else if CommandLine.arguments.contains("--instrument-self-test") {
     do {
         try InstrumentSelfTest.run()

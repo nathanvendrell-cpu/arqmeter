@@ -1,5 +1,22 @@
 # Changements
 
+## 1.0.25 — 2026-10-20 — sources
+
+- Publication des correctifs locaux 1.0.21 à 1.0.24 : source principale réellement
+  appliquée, présentation Codex + Claude, clic droit et fermeture volontaire.
+- Quotas Claude indépendants et dernier relevé explicite ; lecteur CLI partagé,
+  délais et backoff conservés, sans lecteurs concurrents ni valeur fabriquée.
+- Suivi récent Claude Code/onglet Code de Claude Desktop à partir des journaux
+  locaux disponibles. Relecture bornée pendant l’affichage ; mesures manquantes,
+  import incomplet et callbacks dépassés traités sans effacer un relevé valide.
+- Période des projets sélectionnable : 1 min, 10 min, 1 h, 24 h, 7 j et 30 j.
+  Historiques et préférences conservés, sans nouvelle refonte du HUD.
+- Support Sparkle 2.10.0 embarqué : menu de vérification et opt-in préversions,
+  politique HTTPS/signatures/versions/canaux. Flux de publication et clé publique
+  non configurés : aucune mise à jour distante n’est téléchargée ou installée.
+- Aucun binaire public, certificat Developer ID, flux ou clé de production créé
+  par la publication des sources. La signature locale reste ad hoc.
+
 ## Pont Claude 0.1.1 — 2026-10-07 — sources
 
 - Correction d'un filtre de réception : `changed` indique quelles valeurs ont

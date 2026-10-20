@@ -76,6 +76,25 @@ public struct HistoricalCoverage: Sendable {
     }
 }
 
+/// Reduced, measured Codex events for the local projects view. This is not
+/// account-wide usage, and a missing metric never becomes a measured zero.
+public struct HistoricalCodexProjectEvent: Sendable {
+    public let sessionID: String
+    public let projectPath: String?
+    public let lastEvent: Date
+    public let input: Int64
+    public let output: Int64
+    public let cachedInput: Int64?
+}
+
+public struct HistoricalCodexProjectActivity: Sendable {
+    public let events: [HistoricalCodexProjectEvent]
+    public let eventCount: Int
+    public let unavailableCount: Int
+    public let scanComplete: Bool
+    public let lastScan: Date?
+}
+
 public enum ComparabilityVerdict: String, Sendable {
     case comparable
     case partiallyComparable
@@ -274,6 +293,103 @@ public final class HistoricalUsageStore {
         return result
     }
 
+    /// Indexed timestamp only; no session content or token total is loaded.
+    public func latestEventDate(harness: String) throws -> Date? {
+        let query = try prepare("SELECT MAX(timestamp) FROM events WHERE harness=?")
+        defer { sqlite3_finalize(query) }
+        bind(harness, to: query, at: 1)
+        guard sqlite3_step(query) == SQLITE_ROW else {
+            throw HistoricalUsageError.sqlite(String(cString: sqlite3_errmsg(db)))
+        }
+        guard sqlite3_column_type(query, 0) != SQLITE_NULL else { return nil }
+        return Date(timeIntervalSince1970: sqlite3_column_double(query, 0))
+    }
+
+    /// Stream the indexed Codex period into session/workspace totals. Keeping
+    /// only the reduced groups avoids retaining a 30-day event array in the UI.
+    /// Bounds match the local live window: (start, end].
+    public func codexProjectActivity(from start: Date, to end: Date) throws -> HistoricalCodexProjectActivity {
+        struct Key: Hashable { let session: String; let workspace: String? }
+        struct Accumulator {
+            var lastEvent: Date
+            var input: Int64 = 0
+            var output: Int64 = 0
+            var cached: Int64 = 0
+            var cacheComplete = true
+        }
+        let query = try prepare("SELECT payload FROM events WHERE harness='codex' AND timestamp>? AND timestamp<=? ORDER BY timestamp")
+        defer { sqlite3_finalize(query) }
+        sqlite3_bind_double(query, 1, start.timeIntervalSince1970)
+        sqlite3_bind_double(query, 2, end.timeIntervalSince1970)
+        var groups: [Key: Accumulator] = [:]
+        var eventCount = 0, unavailableCount = 0
+        while true {
+            let step = sqlite3_step(query)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW else { throw HistoricalUsageError.sqlite(String(cString: sqlite3_errmsg(db))) }
+            eventCount += 1
+            guard let blob = sqlite3_column_blob(query, 0) else { unavailableCount += 1; continue }
+            let data = Data(bytes: blob, count: Int(sqlite3_column_bytes(query, 0)))
+            let record = try JSONDecoder().decode(UnifiedUsageRecord.self, from: data)
+            guard record.harnessID == "codex", case .measured(let input) = record.inputTokens,
+                  case .measured(let output) = record.outputTokens else {
+                unavailableCount += 1
+                continue
+            }
+            let key = Key(session: record.sessionID, workspace: record.projectPath)
+            var value = groups[key] ?? Accumulator(lastEvent: record.timestamp)
+            let (newInput, inputOverflow) = value.input.addingReportingOverflow(input)
+            let (newOutput, outputOverflow) = value.output.addingReportingOverflow(output)
+            guard !inputOverflow, !outputOverflow else { throw HistoricalUsageError.sqlite("Total de projet hors limites") }
+            value.input = newInput
+            value.output = newOutput
+            value.lastEvent = max(value.lastEvent, record.timestamp)
+            if case .measured(let cached) = record.cachedInputTokens {
+                let (newCached, cachedOverflow) = value.cached.addingReportingOverflow(cached)
+                guard !cachedOverflow else { throw HistoricalUsageError.sqlite("Cache de projet hors limites") }
+                value.cached = newCached
+            } else { value.cacheComplete = false }
+            groups[key] = value
+        }
+        let scan = try prepare("SELECT tracking_since,last_scan,inventory_complete FROM source_scans WHERE harness='codex'")
+        defer { sqlite3_finalize(scan) }
+        let scanStep = sqlite3_step(scan)
+        guard scanStep == SQLITE_ROW || scanStep == SQLITE_DONE else {
+            throw HistoricalUsageError.sqlite(String(cString: sqlite3_errmsg(db)))
+        }
+        let scanRow = scanStep == SQLITE_ROW
+        let tracking = scanRow ? Date(timeIntervalSince1970: sqlite3_column_double(scan, 0)) : nil
+        let lastScan = scanRow ? Date(timeIntervalSince1970: sqlite3_column_double(scan, 1)) : nil
+        var inventoried = scanRow && sqlite3_column_int(scan, 2) == 1
+        let range = try prepare("SELECT inventoried_since FROM source_scan_ranges WHERE harness='codex'")
+        defer { sqlite3_finalize(range) }
+        let rangeStep = sqlite3_step(range)
+        guard rangeStep == SQLITE_ROW || rangeStep == SQLITE_DONE else {
+            throw HistoricalUsageError.sqlite(String(cString: sqlite3_errmsg(db)))
+        }
+        if rangeStep == SQLITE_ROW, sqlite3_column_type(range, 0) != SQLITE_NULL {
+            inventoried = inventoried || start > Date(timeIntervalSince1970: sqlite3_column_double(range, 0))
+        }
+        let gaps = try prepare("SELECT tracking_since,gap FROM checkpoints WHERE harness='codex' AND gap IS NOT NULL")
+        defer { sqlite3_finalize(gaps) }
+        var knownGap = false
+        while true {
+            let gapStep = sqlite3_step(gaps)
+            if gapStep == SQLITE_DONE { break }
+            guard gapStep == SQLITE_ROW else { throw HistoricalUsageError.sqlite(String(cString: sqlite3_errmsg(db))) }
+            if start < Date(timeIntervalSince1970: sqlite3_column_double(gaps, 0)) { knownGap = true }
+        }
+        let complete = tracking.map { $0 <= start } == true && inventoried && !knownGap &&
+            lastScan.map { $0 >= end.addingTimeInterval(-180) } == true && unavailableCount == 0
+        let events = groups.map { key, value in
+            HistoricalCodexProjectEvent(sessionID: key.session, projectPath: key.workspace,
+                lastEvent: value.lastEvent, input: value.input, output: value.output,
+                cachedInput: value.cacheComplete ? value.cached : nil)
+        }
+        return HistoricalCodexProjectActivity(events: events, eventCount: eventCount,
+            unavailableCount: unavailableCount, scanComplete: complete, lastScan: lastScan)
+    }
+
     public func coverage(harness: String, from start: Date, to end: Date) throws -> HistoricalCoverage {
         let records = try records(harness: harness, from: start, to: end)
         let query = try prepare("SELECT tracking_since,last_scan,inventory_complete,diagnostic FROM source_scans WHERE harness=?")
@@ -338,9 +454,13 @@ fileprivate struct ParserState: Codable {
     var lastCumulative: Int64?
     var occurrences: [String: Int] = [:]
     var skipUntilNewline = false
+    var lastObservedSize: UInt64?
+    var lastObservedModificationDate: Date?
+    var needsCatchUp = false
 
     private enum CodingKeys: String, CodingKey {
-        case sessionID, projectPath, providerID, modelID, lastCumulative, occurrences, skipUntilNewline
+        case sessionID, projectPath, providerID, modelID, lastCumulative, occurrences, skipUntilNewline,
+             lastObservedSize, lastObservedModificationDate, needsCatchUp
     }
 
     init() {}
@@ -354,6 +474,9 @@ fileprivate struct ParserState: Codable {
         lastCumulative = try box.decodeIfPresent(Int64.self, forKey: .lastCumulative)
         occurrences = try box.decodeIfPresent([String: Int].self, forKey: .occurrences) ?? [:]
         skipUntilNewline = try box.decodeIfPresent(Bool.self, forKey: .skipUntilNewline) ?? false
+        lastObservedSize = try box.decodeIfPresent(UInt64.self, forKey: .lastObservedSize)
+        lastObservedModificationDate = try box.decodeIfPresent(Date.self, forKey: .lastObservedModificationDate)
+        needsCatchUp = try box.decodeIfPresent(Bool.self, forKey: .needsCatchUp) ?? false
     }
 }
 
@@ -372,6 +495,21 @@ public struct HistoricalScanResult: Sendable {
     public let recordsRead: Int
     public let complete: Bool
     public let diagnostic: String?
+    public let readFailures: Int
+    /// Only for a bounded recent pass; never implies historical completeness.
+    public let pendingRecentWork: Bool
+
+    public init(harnessID: String, filesScanned: Int, recordsRead: Int,
+                complete: Bool, diagnostic: String?, readFailures: Int = 0,
+                pendingRecentWork: Bool = false) {
+        self.harnessID = harnessID
+        self.filesScanned = filesScanned
+        self.recordsRead = recordsRead
+        self.complete = complete
+        self.diagnostic = diagnostic
+        self.readFailures = readFailures
+        self.pendingRecentWork = pendingRecentWork
+    }
 }
 
 public final class HistoricalUsageEngine {
@@ -381,6 +519,12 @@ public final class HistoricalUsageEngine {
     public var maxBytesPerSource = 32 * 1024 * 1024
     public var maxBytesPerFile = 4 * 1024 * 1024
     public var bootstrapTailBytes = 512 * 1024
+    /// A foreground-only Claude tail pass. The regular 120-second inventory
+    /// remains authoritative for source coverage and historical diagnostics.
+    public var recentClaudeMaxFiles = 4
+    public var recentClaudeMaxBytes = 2 * 1024 * 1024
+    public var recentClaudeMaxBytesPerFile = 1024 * 1024
+    public var recentClaudeFileAge: TimeInterval = 5 * 60
 
     public init(store: HistoricalUsageStore, sources: [HistoricalSource] = HistoricalSource.defaults()) {
         self.store = store
@@ -389,6 +533,68 @@ public final class HistoricalUsageEngine {
 
     public func scan(now: Date = Date()) throws -> [HistoricalScanResult] {
         try sources.map { try scan($0, now: now) }
+    }
+
+    /// Imports only recently modified Claude session tails through the same
+    /// checkpoints, transactions and event identities as the historical scan.
+    /// Deliberately does not write source_scans: a quick tail is not a complete
+    /// inventory, even if every chosen file was read successfully.
+    public func scanRecentClaude(now: Date = Date()) throws -> HistoricalScanResult {
+        guard let source = sources.first(where: { $0.harnessID == "claude-code" }),
+              FileManager.default.isReadableFile(atPath: source.root.path) else {
+            return HistoricalScanResult(harnessID: "claude-code", filesScanned: 0,
+                recordsRead: 0, complete: false, diagnostic: "Source absente ou illisible",
+                pendingRecentWork: true)
+        }
+        let candidates = UsageFiles.files(in: source.root, extension: "jsonl", recursive: true)
+            .compactMap { file -> (URL, Date)? in
+                guard let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                      modified >= now.addingTimeInterval(-recentClaudeFileAge) else { return nil }
+                return (file, modified)
+            }
+            .sorted { $0.1 == $1.1 ? $0.0.path < $1.0.path : $0.1 > $1.1 }
+        // Inspect metadata/checkpoints for every recently touched file, but
+        // never its content until it has a real delta. Unchanged files cannot
+        // consume the four-file work budget or starve a fifth active session.
+        var changed: [URL] = []
+        var pendingUnterminated = 0, failures = 0
+        for (file, _) in candidates {
+            do {
+                let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+                guard let size = (attributes[.size] as? NSNumber)?.uint64Value,
+                      let inode = (attributes[.systemFileNumber] as? NSNumber)?.stringValue,
+                      let modified = attributes[.modificationDate] as? Date else {
+                    failures += 1
+                    continue
+                }
+                let previous = try store.checkpoint(harness: source.harnessID, path: file.path)
+                let delta = previous == nil || previous!.inode != inode || previous!.offset > size ||
+                    previous!.state.needsCatchUp ||
+                    previous!.state.lastObservedSize != size ||
+                    previous!.state.lastObservedModificationDate != modified
+                if delta { changed.append(file) }
+                else if previous!.offset < size { pendingUnterminated += 1 }
+            } catch { failures += 1 }
+        }
+        var budget = max(0, recentClaudeMaxBytes)
+        var scanned = 0, count = 0, pendingBytes = 0
+        for file in changed.prefix(max(0, recentClaudeMaxFiles)) where budget > 0 {
+            do {
+                let result = try scanFile(file, source: source, now: now,
+                    budget: min(budget, max(1, recentClaudeMaxBytesPerFile)),
+                    rescanSameSizeChange: true)
+                budget -= result.bytesRead
+                count += result.recordsRead
+                scanned += 1
+                if result.pendingBytes { pendingBytes += 1 }
+            } catch { failures += 1 }
+        }
+        let limited = changed.count > scanned
+        let pending = limited || pendingBytes > 0 || pendingUnterminated > 0 || failures > 0
+        return HistoricalScanResult(harnessID: source.harnessID, filesScanned: scanned,
+            recordsRead: count, complete: false,
+            diagnostic: "Passe récente bornée · couverture historique inchangée\(pending ? " · import en attente" : "")\(failures > 0 ? " · \(failures) erreur(s)" : "")",
+            readFailures: failures, pendingRecentWork: pending)
     }
 
     private func scan(_ source: HistoricalSource, now: Date) throws -> HistoricalScanResult {
@@ -434,11 +640,13 @@ public final class HistoricalUsageEngine {
         try store.recordScan(harness: source.harnessID, at: now, complete: complete,
                              inventoriedSince: failures == 0 ? oldestInventoried : nil, diagnostic: diagnostic)
         return HistoricalScanResult(harnessID: source.harnessID, filesScanned: scanned,
-                                    recordsRead: count, complete: complete, diagnostic: diagnostic)
+                                    recordsRead: count, complete: complete, diagnostic: diagnostic,
+                                    readFailures: failures)
     }
 
     private func scanFile(_ file: URL, source: HistoricalSource, now: Date,
-                          budget: Int) throws -> (bytesRead: Int, recordsRead: Int) {
+                          budget: Int, rescanSameSizeChange: Bool = false) throws
+                          -> (bytesRead: Int, recordsRead: Int, pendingBytes: Bool) {
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular,
               let size = (attributes[.size] as? NSNumber)?.uint64Value,
@@ -446,7 +654,11 @@ public final class HistoricalUsageEngine {
             throw HistoricalUsageError.sqlite("Fichier non régulier ou inode indisponible : \(file.path)")
         }
         let previous = try store.checkpoint(harness: source.harnessID, path: file.path)
-        let rotated = previous != nil && (previous!.inode != inode || previous!.offset > size)
+        let modified = attributes[.modificationDate] as? Date
+        let sameSizeChange = rescanSameSizeChange && previous != nil &&
+            previous!.offset == size && previous!.state.lastObservedSize == size &&
+            previous!.state.lastObservedModificationDate != modified
+        let rotated = previous != nil && (previous!.inode != inode || previous!.offset > size || sameSizeChange)
         let start: UInt64
         if let previous, !rotated { start = previous.offset }
         else { start = size > UInt64(bootstrapTailBytes) ? size - UInt64(bootstrapTailBytes) : 0 }
@@ -494,10 +706,13 @@ public final class HistoricalUsageEngine {
         var gap = (previous == nil || rotated) && start > 0
             ? "Préfixe de \(file.lastPathComponent) non relu (amorçage borné ou rotation)" : previous?.gap
         if skippedLongLine { gap = [gap, "Ligne > 4 Mio ignorée dans \(file.lastPathComponent)"].compactMap { $0 }.joined(separator: " ; ") }
+        state.lastObservedSize = size
+        state.lastObservedModificationDate = modified
+        state.needsCatchUp = start + UInt64(consumed) < size
         let checkpoint = FileCheckpoint(inode: inode, offset: lastComplete,
             trackingSince: previous?.trackingSince ?? now, lastScan: now, gap: gap, state: state)
         try store.commit(records: records, checkpoint: checkpoint, harness: source.harnessID, path: file.path)
-        return (consumed, records.count)
+        return (consumed, records.count, lastComplete < size)
     }
 
     private func byteBefore(_ offset: UInt64, in handle: FileHandle) throws -> UInt8? {

@@ -11,6 +11,11 @@ enum DashboardTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+typealias PrimaryHistoryCompletion = ([UnifiedUsageRecord], String?) -> Void
+typealias PrimaryHistoryReader = (String, Date, Date, @escaping PrimaryHistoryCompletion) -> Void
+typealias RecentClaudeCompletion = ([UnifiedUsageRecord], String?, Date, Bool, Date?) -> Void
+typealias RecentClaudeReader = (TimeInterval, @escaping RecentClaudeCompletion) -> Void
+
 final class DashboardModel: ObservableObject {
     @Published var selectedTab: DashboardTab = .direct
     @Published var remainingPercent: Int?
@@ -27,19 +32,54 @@ final class DashboardModel: ObservableObject {
     @Published var isLoading = false
     @Published var isLive = false
     @Published var quotaHistoryExpanded = false
-    let comparison = ComparisonModel()
+    @Published private(set) var claudeQuotaSnapshot: ClaudeMenuQuotaSnapshot?
+    @Published private(set) var settingsRequestID = 0
+    @Published private(set) var primaryHistory: UnifiedUsage?
+    @Published private(set) var primaryHistoryReadAt: Date?
+    @Published private(set) var primaryHistoryError: String?
+    @Published private(set) var primaryHistoryLoading = false
+    @Published private(set) var primaryHistoryPending = false
+    @Published private(set) var primaryHistoryID = "codex"
+    @Published private(set) var claudeLastKnownEventAt: Date?
+    let comparison: ComparisonModel
     let accountTimeline = AccountTimelineModel()
     private var lastLoad: Date?
-    private let scanner = LocalActivityStore()
+    private let scanner: LocalActivityStore
     private let cycleReader = CycleHistoryReader()
     private let quotaHistoryStore: QuotaHistoryStore
     private let scanQueue = DispatchQueue(label: "com.7agency.arqmeter.live", qos: .utility)
     private var liveTimer: Timer?
     private var isScanning = false
     private var liveDemand = LiveReadDemand()
+    private var primaryHistoryGeneration = 0
+    private var primaryHistoryWindow: (start: Date, end: Date)?
+    private let readPrimaryHistory: PrimaryHistoryReader
+    private let readRecentClaude: RecentClaudeReader
+    private var recentClaudeVisibleConsumers: Set<String> = []
+    private var recentClaudeInFlight = false
+    private var recentClaudeAttemptID = 0
+    private var lastRecentClaudeAttempt: Date?
+    private let primaryAvailability: (String) -> (installed: Bool, readable: Bool)
 
-    init(quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore()) {
+    init(quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore(),
+         comparison: ComparisonModel = ComparisonModel(),
+         localActivityStore: LocalActivityStore = LocalActivityStore(),
+         readPrimaryHistory: @escaping PrimaryHistoryReader = { id, start, end, completion in
+             HistoricalUsageService.shared.analysisRecords(harness: id, from: start, to: end, completion: completion)
+         },
+         readRecentClaude: @escaping RecentClaudeReader = { duration, completion in
+             HistoricalUsageService.shared.recentClaudeRecords(duration: duration, completion: completion)
+         },
+         primaryAvailability: @escaping (String) -> (installed: Bool, readable: Bool) = { id in
+             let source = SourceAvailabilityProbe.detect().first { $0.harnessID == id }
+             return (source?.installed ?? false, source?.logRootReadable ?? false)
+         }) {
         self.quotaHistoryStore = quotaHistoryStore
+        self.comparison = comparison
+        self.scanner = localActivityStore
+        self.readPrimaryHistory = readPrimaryHistory
+        self.readRecentClaude = readRecentClaude
+        self.primaryAvailability = primaryAvailability
         quotaHistory = quotaHistoryStore.points
     }
 
@@ -61,10 +101,144 @@ final class DashboardModel: ObservableObject {
         comparison.acceptOfficialDays(daily)
     }
 
+    func requestSourceSettings() { settingsRequestID += 1 }
+
+    /// Reuses the menu bar's existing passive two-second read. No second
+    /// quota collector or timer is started for the paired HUD.
+    func applyClaudeQuota(statusLine: ClaudeQuotaReport?, cli: ClaudeCLIQuotaReport?, at now: Date) {
+        claudeQuotaSnapshot = ClaudeMenuQuotaSnapshot.make(statusLine: statusLine, cli: cli, at: now)
+    }
+
     func setConsumptionRange(_ range: ConsumptionRange) {
         consumptionRange = range
         consumptionPage = 0
         selectedConsumptionBucket = nil
+        primaryHistoryPending = false
+        lastRecentClaudeAttempt = nil
+        refreshPrimaryHistory()
+        refreshVisibleClaude()
+    }
+
+    func selectPrimarySource(_ id: String) {
+        guard SourceLayout.registryIDs.contains(id) else { return }
+        guard primaryHistoryID != id else {
+            if id != "codex", primaryHistory == nil, !primaryHistoryLoading { refreshPrimaryHistory() }
+            return
+        }
+        primaryHistoryGeneration += 1
+        primaryHistoryID = id
+        primaryHistory = nil
+        primaryHistoryReadAt = nil
+        primaryHistoryError = nil
+        primaryHistoryLoading = false
+        primaryHistoryPending = false
+        primaryHistoryWindow = nil
+        invalidateRecentClaudeAttempt()
+        refreshPrimaryHistory()
+        refreshVisibleClaude()
+    }
+
+    /// Reads the existing indexed, source-filtered history. The shared scanner
+    /// remains the only importer; this never starts a model or a second scan.
+    func refreshPrimaryHistory(preservingCurrent: Bool = false) {
+        primaryHistoryGeneration += 1
+        let generation = primaryHistoryGeneration
+        let id = primaryHistoryID
+        guard id != "codex" else { return }
+        let range = consumptionRange
+        let end = Date()
+        let start = end.addingTimeInterval(-range.historicalDuration)
+        if !preservingCurrent {
+            primaryHistory = nil
+            primaryHistoryReadAt = nil
+            primaryHistoryWindow = nil
+        }
+        primaryHistoryError = nil
+        primaryHistoryLoading = true
+        readPrimaryHistory(id, start, end) { [weak self] records, error in
+            guard let self, self.primaryHistoryGeneration == generation,
+                  self.primaryHistoryID == id, self.consumptionRange == range else { return }
+            self.acceptPrimaryHistory(records, error: error, id: id, range: range,
+                start: start, end: end, preservingCurrent: preservingCurrent)
+        }
+    }
+
+    private func acceptPrimaryHistory(_ records: [UnifiedUsageRecord], error: String?, id: String,
+                                      range: ConsumptionRange, start: Date, end: Date,
+                                      preservingCurrent: Bool) {
+        if error != nil && preservingCurrent && primaryHistory != nil {
+            primaryHistoryError = error
+            primaryHistoryLoading = false
+            return
+        }
+        let availability = primaryAvailability(id)
+        let source = UsageSourceSnapshot(harnessID: id, installed: availability.installed,
+            readable: availability.readable, records: records.filter { $0.harnessID == id },
+            coverage: "Historique local indexé · \(range.label)", diagnostic: error)
+        primaryHistory = UnifiedUsage(sources: [source])
+        primaryHistoryReadAt = Date()
+        primaryHistoryWindow = (start, end)
+        primaryHistoryError = error
+        primaryHistoryLoading = false
+    }
+
+    /// A visible Claude readout borrows the existing live tick. Each consumer
+    /// has its own identity so closing one window does not stop another.
+    func setRecentClaudeVisible(_ visible: Bool, for consumer: String) {
+        if visible { recentClaudeVisibleConsumers.insert(consumer) }
+        else { recentClaudeVisibleConsumers.remove(consumer) }
+        if !visible && recentClaudeVisibleConsumers.isEmpty { invalidateRecentClaudeAttempt() }
+        if visible { refreshVisibleClaude() }
+    }
+
+    private func invalidateRecentClaudeAttempt() {
+        recentClaudeAttemptID += 1
+        recentClaudeInFlight = false
+        lastRecentClaudeAttempt = nil
+    }
+
+    func refreshVisibleClaude(now: Date = Date()) {
+        guard isLive, !recentClaudeVisibleConsumers.isEmpty,
+              primaryHistoryID == "claude-code", !recentClaudeInFlight else { return }
+        guard lastRecentClaudeAttempt.map({ now.timeIntervalSince($0) >= 15 }) ?? true else { return }
+        recentClaudeInFlight = true
+        recentClaudeAttemptID += 1
+        let attemptID = recentClaudeAttemptID
+        lastRecentClaudeAttempt = now
+        primaryHistoryGeneration += 1
+        let generation = primaryHistoryGeneration
+        let range = consumptionRange
+        if primaryHistory == nil { primaryHistoryLoading = true }
+        readRecentClaude(range.historicalDuration) { [weak self] records, error, windowEnd, pending, lastKnownAt in
+            guard let self else { return }
+            guard self.recentClaudeAttemptID == attemptID else { return }
+            self.recentClaudeInFlight = false
+            guard self.isLive, !self.recentClaudeVisibleConsumers.isEmpty else { return }
+            guard self.primaryHistoryGeneration == generation,
+                  self.primaryHistoryID == "claude-code", self.consumptionRange == range else {
+                self.lastRecentClaudeAttempt = nil
+                self.refreshVisibleClaude()
+                return
+            }
+            self.primaryHistoryPending = pending
+            if error == nil {
+                self.claudeLastKnownEventAt = lastKnownAt.flatMap { $0 <= windowEnd ? $0 : nil }
+            }
+            if pending && records.isEmpty && self.primaryHistory != nil {
+                self.primaryHistoryError = error
+                self.primaryHistoryLoading = false
+            } else {
+                self.acceptPrimaryHistory(records, error: error, id: "claude-code", range: range,
+                    start: windowEnd.addingTimeInterval(-range.historicalDuration),
+                    end: windowEnd, preservingCurrent: true)
+            }
+        }
+    }
+
+    var primaryReadout: PrimarySourceReadout? {
+        guard let primaryHistory, let primaryHistoryWindow, primaryHistoryID != "codex" else { return nil }
+        return PrimarySourceReadout(usage: primaryHistory, primaryID: primaryHistoryID,
+            from: primaryHistoryWindow.start, to: primaryHistoryWindow.end)
     }
 
     func startLive(for consumer: String = "default") {
@@ -76,9 +250,11 @@ final class DashboardModel: ObservableObject {
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             self?.refreshLocal()
             self?.load()
+            self?.refreshVisibleClaude()
         }
         liveTimer = timer
         RunLoop.main.add(timer, forMode: .common)
+        refreshVisibleClaude()
     }
 
     func stopLive(for consumer: String = "default") {
@@ -87,6 +263,7 @@ final class DashboardModel: ObservableObject {
         isLive = false
         liveTimer?.invalidate()
         liveTimer = nil
+        invalidateRecentClaudeAttempt()
     }
 
     func stopAllLive() {
@@ -129,6 +306,293 @@ final class DashboardModel: ObservableObject {
     }
 }
 
+/// The direct readout for a selected non-Codex harness. The indexed history is
+/// explicitly not represented as a live token stream or an account quota.
+struct PrimarySourceActivityView: View {
+    @ObservedObject var model: DashboardModel
+    var compact = false
+    var showsPicker = false
+    var showsInstrument = true
+
+    private var reading: PrimarySourceReadout? { model.primaryReadout }
+    private var dialAmount: Double? {
+        guard let reading else { return nil }
+        return model.consumptionRange.isOfficial
+            ? reading.completeTotalTokens.map(Double.init) : reading.observedTokensPerSecond
+    }
+    private var dialUnit: String { model.consumptionRange.isOfficial ? "tokens" : "tokens/s" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 7 : 11) {
+            if compact || showsPicker { periodPicker }
+            HStack {
+                Circle().fill(InstrumentTheme.secondary).frame(width: 6, height: 6)
+                Text(SourceDisplay.name(model.primaryHistoryID))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                Spacer()
+                Text("ÉVÉNEMENTS OBSERVÉS · \(model.consumptionRange.label)")
+                    .font(.system(size: 9, weight: .bold)).foregroundStyle(InstrumentTheme.secondary)
+            }
+            if showsInstrument {
+            HStack(spacing: 12) {
+                TokenInstrument(amount: dialAmount, unit: dialUnit,
+                    periodID: "\(model.primaryHistoryID)-\(model.consumptionRange.rawValue)")
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.consumptionRange.title)
+                        .font(.system(size: 12)).foregroundStyle(InstrumentTheme.secondary)
+                    if let amount = dialAmount {
+                        Text(TokenDialGeometry.label(amount))
+                            .font(.system(size: compact ? 30 : 35, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                        Text(model.primaryHistoryError != nil ? "dernier relevé · lecture indisponible" :
+                             model.primaryHistoryPending ? "dernier relevé · import en attente" :
+                             model.consumptionRange.isOfficial ? "tokens observés" : "tokens/s · moyenne observée")
+                            .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                        if !model.consumptionRange.isOfficial, let total = reading?.completeTotalTokens {
+                            Text("\(TokenDialGeometry.label(Double(total))) tokens sur la période")
+                                .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                        }
+                    } else if let duration = reading?.aggregate.durationSeconds,
+                              reading?.aggregate.inputTokens.value == nil,
+                              reading?.aggregate.outputTokens.value == nil {
+                        Text(duration.formatted(.number.precision(.fractionLength(0...1))) + " s")
+                            .font(.system(size: compact ? 30 : 35, weight: .semibold, design: .rounded))
+                        Text("durée serveur · tokens indisponibles")
+                            .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                    } else {
+                        Text("—").font(.system(size: 30, weight: .semibold))
+                        Text(model.primaryHistoryLoading ? "Lecture de la source…" :
+                             model.primaryHistoryError != nil ? "Historique indisponible" :
+                             model.primaryHistoryPending ? "Import récent en attente" :
+                             reading?.aggregate.records.isEmpty == true ?
+                                 (model.primaryHistoryID == "claude-code" ? "Pas de mesure sur cette période" : "Aucun événement observé") :
+                                 "Mesure incomplète ou indisponible")
+                            .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            } else {
+                Text(reading?.completeTotalTokens.map { "\(TokenDialGeometry.label(Double($0))) tokens observés" }
+                     ?? "Tokens incomplets ou indisponibles")
+                    .font(.system(size: 11)).foregroundStyle(InstrumentTheme.secondary)
+            }
+            if !compact, let reading {
+                let nonCached: Int64? = {
+                    guard reading.aggregate.inputTokens.complete, reading.aggregate.cachedInputTokens.complete,
+                          let input = reading.aggregate.inputTokens.value,
+                          let cached = reading.aggregate.cachedInputTokens.value,
+                          input >= cached, cached >= 0 else { return nil }
+                    return input - cached
+                }()
+                HStack(spacing: 7) {
+                    metric("Entrée hors cache", value: nonCached)
+                    metric("Entrée cache", value: reading.aggregate.cachedInputTokens.complete ? reading.aggregate.cachedInputTokens.value : nil)
+                    metric("Sortie", value: reading.aggregate.outputTokens.complete ? reading.aggregate.outputTokens.value : nil)
+                }
+                ActivitySparkline(values: reading.tokenBuckets(count: model.consumptionRange.bucketCount).map { $0.map(Double.init) })
+                    .frame(height: 35)
+                Text(reading.lastEventAt.map { "Dernier événement : \($0.formatted(date: .omitted, time: .shortened))" }
+                     ?? "Aucun événement daté sur cette période")
+                    .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            }
+        }
+        .help("\(SourceDisplay.name(model.primaryHistoryID)) · historique local indexé, pas un flux en direct ni un quota. \(model.primaryHistoryPending ? "Import récent incomplet. " : "")Dernier événement : \(reading?.lastEventAt?.formatted() ?? "aucun"). Index lu : \(model.primaryHistoryReadAt?.formatted() ?? "en attente"). \(reading?.lastProvenance ?? "Provenance indisponible")")
+    }
+
+    private var periodPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(ConsumptionRange.allCases) { choice in
+                Button(choice.label) { model.setConsumptionRange(choice) }
+                    .font(.system(size: 10, weight: model.consumptionRange == choice ? .bold : .medium))
+                    .frame(maxWidth: .infinity).padding(.vertical, 6)
+                    .background(model.consumptionRange == choice ? InstrumentTheme.blue.opacity(0.23) : .white.opacity(0.035),
+                                in: RoundedRectangle(cornerRadius: 7))
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func metric(_ title: String, value: Int64?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            Text(value.map { TokenDialGeometry.label(Double($0)) } ?? "—")
+                .font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9)
+        .background(.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 11))
+    }
+}
+
+/// Two independent readouts in one compact instrument, never a combined
+/// provider, token total or quota. The period picker changes both columns.
+struct CodexClaudePairOverview: View {
+    @ObservedObject var model: DashboardModel
+    @ObservedObject var preferences: SourceDisplayPreferences
+    let codexWindow: ConsumptionWindow?
+
+    private var range: ConsumptionRange { model.consumptionRange }
+    private var codexAmount: Double? {
+        ControlReadout.dial(codexWindow, range: range, sampledAt: model.local?.sampledAt, now: Date())
+    }
+    private var codexSummary: String {
+        if range.isOfficial {
+            return codexWindow?.total == nil ? "Journées du compte indisponibles" : "Compte · journées rapportées"
+        }
+        guard let sampledAt = model.local?.sampledAt else { return "Lecture locale…" }
+        guard ControlReadout.isFresh(sampledAt, now: Date(), within: 10) else { return "Relevé local périmé" }
+        guard let codexWindow else { return "Mesure indisponible" }
+        guard codexWindow.scanComplete else { return "Lecture locale partielle" }
+        return codexWindow.total.map { "\(TokenDialGeometry.label(Double($0))) tokens · ce Mac" }
+            ?? "Aucun événement observé"
+    }
+    private var claudeReading: PrimarySourceReadout? {
+        guard model.primaryHistoryID == "claude-code", model.primaryReadout?.harnessID == "claude-code" else {
+            return nil
+        }
+        return model.primaryReadout
+    }
+    private var claudeAmount: Double? {
+        guard let reading = claudeReading else { return nil }
+        return range.isOfficial ? reading.completeTotalTokens.map(Double.init) : reading.observedTokensPerSecond
+    }
+    var claudeSummary: String {
+        guard model.primaryHistoryID == "claude-code" else { return "Lecture de Claude…" }
+        if model.primaryHistoryLoading && (claudeReading == nil || claudeReading?.aggregate.records.isEmpty == true) {
+            return "Lecture de l’historique…"
+        }
+        guard let reading = claudeReading else {
+            if model.primaryHistoryError != nil { return "Historique indisponible" }
+            return model.primaryHistoryPending ? "Import récent en attente" : "Historique en attente"
+        }
+        if reading.aggregate.records.isEmpty {
+            if model.primaryHistoryError != nil { return "Historique indisponible" }
+            return model.primaryHistoryPending ? "Import récent en attente" : "Pas de mesure sur cette période"
+        }
+        return reading.completeTotalTokens.map {
+            "\(TokenDialGeometry.label(Double($0))) tokens · \(model.primaryHistoryPending ? "dernier relevé · import en attente" : model.primaryHistoryError == nil ? "historique local" : "dernier relevé")"
+        } ?? (model.primaryHistoryPending ? "Mesure partielle · import en attente" : "Mesure partielle ou indisponible")
+    }
+    var claudeLastEvent: String? {
+        if let reading = claudeReading, reading.aggregate.records.isEmpty,
+           let known = model.claudeLastKnownEventAt, known <= reading.periodStart {
+            return "Dernier événement indexé · \(known.formatted(.dateTime.day().month(.abbreviated).hour().minute()))"
+        }
+        guard let date = claudeReading?.lastEventAt else { return nil }
+        let prefix = model.primaryHistoryError == nil && !model.primaryHistoryPending
+            ? "Dernier événement" : "Dernier relevé · événement"
+        return "\(prefix) · \(date.formatted(.dateTime.day().month(.abbreviated).hour().minute()))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("Codex + Claude Code").font(.system(size: 13, weight: .semibold, design: .rounded))
+                Spacer()
+                Text("MESURES SÉPARÉES").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(InstrumentTheme.secondary)
+            }
+            HStack(spacing: 4) {
+                ForEach(ConsumptionRange.allCases) { choice in
+                    Button(choice.label) { model.setConsumptionRange(choice) }
+                        .font(.system(size: 10, weight: range == choice ? .bold : .medium))
+                        .frame(maxWidth: .infinity).padding(.vertical, 6)
+                        .background(range == choice ? InstrumentTheme.blue.opacity(0.23) : .white.opacity(0.035),
+                                    in: RoundedRectangle(cornerRadius: 7))
+                }
+            }
+            .buttonStyle(.plain)
+            HStack(alignment: .top, spacing: 8) {
+                column(name: "Codex", amount: codexAmount,
+                    unit: range.isOfficial ? "tokens" : "tokens/s",
+                    metricLabel: range.isOfficial ? "tokens rapportés" : "tokens/s · moyenne",
+                    total: codexSummary, detail: nil, suffix: "codex") {
+                    codexQuota
+                }
+                column(name: "Claude Code", amount: claudeAmount,
+                    unit: range.isOfficial ? "tokens" : "tokens/s",
+                    metricLabel: range.isOfficial ? "tokens historiques" : "tokens/s · moyenne",
+                    total: claudeSummary, detail: claudeLastEvent, suffix: "claude") {
+                    claudeQuota
+                }
+            }
+        }
+        .padding(10)
+        .help("Codex : événements locaux sur 1 min–24 h et journées du compte sur 7/30 j. Claude Code : tokens des sessions JSONL indexées, non live ; l’onglet Code de Claude Desktop est inclus lorsque ses sessions sont dans ces journaux locaux, mais pas les conversations Chat. Les quotas Claude restent des relevés distincts. Les cadences sont des moyennes ; aucun quota ou token n'est additionné.")
+    }
+
+    private func column<Quota: View>(name: String, amount: Double?, unit: String, metricLabel: String,
+                                     total: String, detail: String?, suffix: String,
+                                     @ViewBuilder quota: () -> Quota) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(name).font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(InstrumentTheme.blue)
+            TokenInstrument(amount: amount, unit: unit, periodID: "pair-\(suffix)-\(range.rawValue)")
+                .frame(maxWidth: .infinity)
+            Text(amount.map(TokenDialGeometry.label) ?? "—")
+                .font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit()
+            Text(metricLabel)
+                .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            Text(total).font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            if let detail {
+                Text(detail).font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            Divider().padding(.vertical, 2)
+            quota()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(7)
+        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var codexQuota: some View {
+        let percent = ControlReadout.quota(model.remainingPercent, sampledAt: model.officialSampledAt,
+                                           now: Date(), resetsAt: model.resetsAt)
+        return VStack(alignment: .leading, spacing: 3) {
+            Text("Quota 7 j · \(percent.map { "\($0) %" } ?? "— %") restants")
+                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+            if percent != nil, let reset = model.resetsAt {
+                Text("Réinit. \(reset.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            } else {
+                Text(model.officialSampledAt == nil ? "Aucun relevé" : "Relevé périmé")
+                    .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            }
+        }
+    }
+
+    private var claudeQuota: some View {
+        let snapshot = model.claudeQuotaSnapshot
+        return VStack(alignment: .leading, spacing: 3) {
+            if snapshot?.isLastKnown == true {
+                Label("Dernier relevé", systemImage: "clock")
+                    .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+            }
+            ForEach(preferences.claudeQuotaMode.periods, id: \.rawValue) { period in
+                let window = snapshot?.readout?.window(period)
+                Text("\(period == .fiveHour ? "5 h" : "Semaine") · \(window.map { "\($0.remainingPercent) %" } ?? "— %") restants")
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                if let window {
+                    Text(window.resetsAt.map {
+                        "Réinit. \($0.formatted(date: .abbreviated, time: .shortened))"
+                    } ?? window.resetLabel?.replacingOccurrences(of: "Resets in", with: "Réinit. dans")
+                        ?? "Réinit. non datée")
+                        .font(.system(size: 10)).foregroundStyle(InstrumentTheme.secondary)
+                }
+            }
+            if snapshot?.readout == nil {
+                Text("Quota indisponible").font(.system(size: 10))
+                    .foregroundStyle(InstrumentTheme.secondary)
+            }
+        }
+        .help("Claude · \(snapshot?.readout?.provenance ?? "aucun relevé recevable") · reçu localement à \(snapshot?.readout?.observedAt.formatted() ?? "—"). Fraîcheur serveur non démontrée.")
+    }
+}
+
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     @ObservedObject private var sourcePreferences: SourceDisplayPreferences
@@ -136,6 +600,7 @@ struct DashboardView: View {
     @State private var showingSources = false
     @State private var showingSourceSettings = false
     @State private var now = Date()
+    @State private var recentClaudeConsumer = UUID().uuidString
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let openDetails: (() -> Void)?
     let onWindowDrag: ((NSEvent?) -> Void)?
@@ -240,15 +705,28 @@ struct DashboardView: View {
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
         .onAppear {
+            model.selectPrimarySource(sourcePreferences.selectedHistoryID)
+            syncRecentClaudeVisibility()
             if model.selectedTab == .quota { sourcesModel.loadHistorical() }
+        }
+        .onChange(of: sourcePreferences.selectedHistoryID) {
+            model.selectPrimarySource($0)
+            syncRecentClaudeVisibility()
         }
         .onChange(of: model.selectedTab) {
             if $0 == .quota { sourcesModel.loadHistorical() }
+            syncRecentClaudeVisibility()
         }
+        .onDisappear { model.setRecentClaudeVisible(false, for: recentClaudeConsumer) }
         .onReceive(NotificationCenter.default.publisher(for: .arqmeterHistoryUpdated)) { _ in
             if model.selectedTab == .quota { sourcesModel.loadHistorical() }
         }
         .modifier(ArqmeterWindowFocus())
+    }
+
+    private func syncRecentClaudeVisibility() {
+        model.setRecentClaudeVisible(model.selectedTab == .direct &&
+            sourcePreferences.selectedHistoryID == "claude-code", for: recentClaudeConsumer)
     }
 
     private var tabBar: some View {
@@ -317,16 +795,13 @@ struct DashboardView: View {
 
     private var sourceSummary: some View {
         VStack(spacing: 0) {
-            if sourcePreferences.visibleIDs.contains("codex") {
+            if sourcePreferences.showsCodexAndClaude {
+                CodexClaudePairOverview(model: model, preferences: sourcePreferences,
+                    codexWindow: consumptionWindow)
+            } else if sourcePreferences.primaryID == "codex" {
                 codexGlance
             } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Les mesures des sources suivies sont dans les statistiques.")
-                        .font(.system(size: 13)).foregroundStyle(muted)
-                    Button("Choisir les sources du HUD") { showingSourceSettings = true }
-                        .buttonStyle(.plain).foregroundStyle(blue)
-                }
-                .padding(14)
+                PrimarySourceActivityView(model: model, compact: true).padding(14)
             }
         }
         .arqmeterGlass(radius: 15)
@@ -478,6 +953,9 @@ struct DashboardView: View {
     private var directCard: some View {
         let range = model.consumptionRange
         return VStack(alignment: .leading, spacing: 11) {
+            if !sourcePreferences.showsCodexAndClaude && sourcePreferences.primaryID != "codex" {
+                PrimarySourceActivityView(model: model)
+            } else {
             HStack {
                 HStack(spacing: 6) {
                     Circle().fill(range.isOfficial ? cyan : (model.isLive ? mint : Color.gray))
@@ -553,6 +1031,11 @@ struct DashboardView: View {
                 .font(.system(size: 9)).foregroundStyle(muted.opacity(0.67))
             } else {
                 placeholder("Lecture des sessions locales…")
+            }
+            }
+            if sourcePreferences.showsCodexAndClaude {
+                Divider().padding(.vertical, 3)
+                PrimarySourceActivityView(model: model, showsInstrument: false)
             }
         }
         .padding(14)

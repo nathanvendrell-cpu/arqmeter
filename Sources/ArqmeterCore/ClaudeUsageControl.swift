@@ -83,6 +83,8 @@ public enum ClaudeUsageControl {
         public enum Plan: String, Codable { case absent, null, canonical, otherString, invalidType }
         public enum Utilization: String, Codable { case absent, null, boolean, invalidType, nonFinite, outOfRange, valid }
         public enum Reset: String, Codable { case absent, null, invalidType, invalidDate, elapsed, future }
+        /// The retained liveMarker* wire labels describe a missing or invalid
+        /// model_scoped shape only; they do not identify a native cache branch.
         public enum Rejection: String, Codable {
             case invalidVerifiedSubscription, availabilityAbsent, availabilityNull, availabilityFalse, availabilityInvalidType
             case planAbsent, planNull, planInvalidType, planConflict
@@ -156,15 +158,15 @@ public enum ClaudeUsageControl {
         return (diagnostic, .init(usedPercent: number.doubleValue, resetLabel: nil, expiresAt: date))
     }
 
-    /// SDK 0.3.291 documents model_scoped as absent for cached answers; [] means
-    /// the endpoint answered without per-model buckets. Without that evidence
-    /// we reject the response instead of renewing an old quota's observation time.
+    /// Preserve the conservative response-shape guard. The native handler can
+    /// serve a recent snapshot with the same shape, so this is not proof of a
+    /// network fetch or server freshness.
     public static func report(_ payload: [String: Any], observedAt: Date, subscription: String) throws -> ClaudeCLIQuotaReport {
         try evaluate(payload, observedAt: observedAt, subscription: subscription).result.get()
     }
 
     /// One validation path for the report and its rejection reason; diagnostics
-    /// cannot relax the live-marker, quota, subscription or freshness guards.
+    /// cannot relax the response-shape, quota, subscription or reset guards.
     public static func evaluate(_ payload: [String: Any], observedAt: Date, subscription: String) -> UsageEvaluation {
         let canonical = ["pro", "max", "team", "enterprise"]
         let availabilityKind = kind(payload["rate_limits_available"])
@@ -212,7 +214,7 @@ public enum ClaudeUsageControl {
         }
         guard session?.1 != nil || weekly?.1 != nil else { return rejected(.noValidWindow, .unsupported) }
         return .init(diagnostic: diagnostic, result: .success(.init(observedAt: observedAt, session: session?.1, weekly: weekly?.1,
-                     transportKind: "official-get-usage-live", subscriptionType: subscription)))
+                     transportKind: "official-get-usage-unknown", subscriptionType: subscription)))
     }
 
     public static func failure(_ publicError: String) -> ClaudeCLIQuotaReport.Failure {

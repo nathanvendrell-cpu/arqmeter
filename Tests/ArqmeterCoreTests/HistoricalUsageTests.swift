@@ -21,10 +21,257 @@ final class HistoricalUsageTests: XCTestCase {
         try handle.write(contentsOf: Data(text.utf8))
     }
 
-    private func claudeLine(id: String, output: Int = 2) -> String {
+    private func claudeLine(id: String, output: Int = 2,
+                            timestamp: String = "2026-09-29T12:00:00Z") -> String {
         """
-        {"type":"assistant","sessionId":"s1","timestamp":"2026-09-29T12:00:00Z","cwd":"/work/Projet Beta","message":{"id":"\(id)","model":"claude-sonnet-4","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":20,"output_tokens":\(output)}}}
+        {"type":"assistant","sessionId":"s1","timestamp":"\(timestamp)","cwd":"/work/Projet Beta","message":{"id":"\(id)","model":"claude-sonnet-4","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":20,"output_tokens":\(output)}}}
         """
+    }
+
+    func testCodexProjectPeriodStreamsMeasuredSessionsAndKeepsBoundaryAndCoverage() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let source = temp.appendingPathComponent("codex")
+        let meta = #"{"type":"session_meta","payload":{"id":"session-alpha","cwd":"/fixture/project-alpha","model_provider":"openai"}}"#
+        func line(_ timestamp: String, cumulative: Int, input: Int, output: Int) -> String {
+            """
+            {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":\(cumulative)},"last_token_usage":{"input_tokens":\(input),"output_tokens":\(output),"cached_input_tokens":1}}}}
+            """
+        }
+        try write([meta, line("2026-09-29T12:00:00Z", cumulative: 10, input: 8, output: 2),
+                   line("2026-09-29T12:00:30Z", cumulative: 20, input: 7, output: 3),
+                   line("2026-09-29T12:00:31Z", cumulative: 20, input: 7, output: 3),
+                   line("2026-09-29T12:01:00Z", cumulative: 30, input: 6, output: 4),
+                   line("2026-09-29T12:01:30Z", cumulative: 40, input: 5, output: 5)].joined(separator: "\n") + "\n",
+                  to: source.appendingPathComponent("rollout-alpha.jsonl"))
+        let betaMeta = #"{"type":"session_meta","payload":{"id":"session-beta","cwd":"/fixture/project-beta"}}"#
+        try write(betaMeta + "\n" + line("2026-09-29T12:01:00Z", cumulative: 10, input: 8, output: 2) + "\n",
+                  to: source.appendingPathComponent("rollout-beta.jsonl"))
+        let oldMeta = #"{"type":"session_meta","payload":{"id":"session-old","cwd":"/fixture/project-alpha"}}"#
+        try write(oldMeta + "\n" + line("2026-09-14T12:00:00Z", cumulative: 9, input: 6, output: 3) + "\n",
+                  to: source.appendingPathComponent("rollout-old.jsonl"))
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "codex", root: source)])
+        let start = ISO8601DateFormatter().date(from: "2026-09-29T12:00:00Z")!
+        let end = ISO8601DateFormatter().date(from: "2026-09-29T12:01:00Z")!
+        _ = try engine.scan(now: end)
+        let period = try store.codexProjectActivity(from: start, to: end)
+        XCTAssertEqual(period.eventCount, 3, "Start excluded, end included; no duplicated cumulative event")
+        XCTAssertEqual(period.events.count, 2)
+        XCTAssertEqual(period.events.first { $0.sessionID == "session-alpha" }?.input, 13)
+        XCTAssertEqual(period.events.first { $0.sessionID == "session-alpha" }?.output, 7)
+        XCTAssertEqual(period.events.first { $0.sessionID == "session-beta" }?.projectPath, "/fixture/project-beta")
+        XCTAssertEqual(period.events.reduce(0) { $0 + $1.input + $1.output }, 30)
+        XCTAssertFalse(period.scanComplete, "An indexed result before tracking began is not complete coverage")
+        XCTAssertEqual(try store.codexProjectActivity(from: end, to: end.addingTimeInterval(40)).eventCount, 1)
+        let week = try store.codexProjectActivity(from: end.addingTimeInterval(-7 * 24 * 60 * 60), to: end)
+        let month = try store.codexProjectActivity(from: end.addingTimeInterval(-30 * 24 * 60 * 60), to: end)
+        XCTAssertEqual(month.eventCount, week.eventCount + 1,
+            "30-day local project history must include an older session without allocating account totals")
+        XCTAssertEqual(month.events.reduce(0) { $0 + $1.input + $1.output },
+                       week.events.reduce(0) { $0 + $1.input + $1.output } + 9)
+        XCTAssertEqual(try store.latestEventDate(harness: "codex"), end.addingTimeInterval(30))
+        XCTAssertNil(try store.latestEventDate(harness: "claude-code"))
+    }
+
+    func testRecentClaudeTailImportsWithinMinuteWithoutCompletingInventory() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-10))
+        let file = temp.appendingPathComponent("claude/project/active.jsonl")
+        try write(claudeLine(id: "active", timestamp: stamp) + "\n", to: file)
+        let old = temp.appendingPathComponent("claude/project/old.jsonl")
+        try write(claudeLine(id: "old", timestamp: stamp) + "\n", to: old)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-600)],
+                                              ofItemAtPath: old.path)
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: temp.appendingPathComponent("claude"))])
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 1)
+        XCTAssertEqual(try store.records(harness: "claude-code", from: now.addingTimeInterval(-60), to: now).count, 1)
+        XCTAssertEqual(try store.records(harness: "claude-code", from: now.addingTimeInterval(11),
+                                         to: now.addingTimeInterval(71)).count, 0,
+                       "Rolling one-minute window must age out the old event")
+        let before = try store.coverage(harness: "claude-code", from: now.addingTimeInterval(-60), to: now)
+        XCTAssertNil(before.lastScan)
+        XCTAssertFalse(before.inventoryComplete, "A tail pass is not a full inventory")
+        engine.maxFilesPerSource = 1
+        _ = try engine.scan(now: now)
+        let partial = try store.coverage(harness: "claude-code", from: now.addingTimeInterval(-60), to: now)
+        XCTAssertFalse(partial.inventoryComplete)
+        _ = try engine.scanRecentClaude(now: now.addingTimeInterval(1))
+        let after = try store.coverage(harness: "claude-code", from: now.addingTimeInterval(-60), to: now)
+        XCTAssertEqual(after.lastScan, partial.lastScan)
+        XCTAssertEqual(after.inventoryComplete, partial.inventoryComplete)
+    }
+
+    func testRecentClaudeTailUsesCheckpointForPartialLineDedupAndRotation() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-5))
+        let file = temp.appendingPathComponent("claude/project/active.jsonl")
+        try write(claudeLine(id: "m1", timestamp: stamp) + "\n" +
+                  claudeLine(id: "m2", timestamp: stamp), to: file)
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: temp.appendingPathComponent("claude"))])
+        let start = now.addingTimeInterval(-60), end = now.addingTimeInterval(1)
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 1)
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 0)
+        try append("\n", to: file)
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 1)
+        XCTAssertEqual(try store.records(harness: "claude-code", from: start, to: end).count, 2)
+        try append(claudeLine(id: "m1", output: 7, timestamp: stamp) + "\n", to: file)
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 1)
+        let revised = try store.records(harness: "claude-code", from: start, to: end)
+        XCTAssertEqual(revised.count, 2)
+        XCTAssertEqual(revised.first { $0.eventID == "claude:s1:m1" }?.outputTokens, .measured(7))
+        try write(claudeLine(id: "m3", timestamp: stamp) + "\n", to: file)
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 1)
+        XCTAssertEqual(try store.records(harness: "claude-code", from: start, to: end).count, 3)
+    }
+
+    func testRecentClaudeAbsentSourceDoesNotAlterCodexOrCreateCoverage() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: temp.appendingPathComponent("missing"))])
+        let result = try engine.scanRecentClaude()
+        XCTAssertFalse(result.complete)
+        XCTAssertEqual(result.filesScanned, 0)
+        XCTAssertNil(try store.coverage(harness: "claude-code", from: .distantPast,
+                                        to: Date()).lastScan)
+        XCTAssertTrue(try store.records(harness: "codex", from: .distantPast, to: Date()).isEmpty)
+    }
+
+    func testRecentClaudeTailByteBudgetKeepsIncompleteLineForNextPass() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3))
+        let file = temp.appendingPathComponent("claude/project/active.jsonl")
+        try write(claudeLine(id: "bounded", timestamp: stamp) + "\n", to: file)
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: temp.appendingPathComponent("claude"))])
+        engine.recentClaudeMaxBytes = 20
+        engine.recentClaudeMaxBytesPerFile = 20
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 0)
+        engine.recentClaudeMaxBytes = 4096
+        engine.recentClaudeMaxBytesPerFile = 4096
+        XCTAssertEqual(try engine.scanRecentClaude(now: now).recordsRead, 1,
+            "A byte-limited pass must not advance past an incomplete JSONL line")
+        XCTAssertEqual(try store.records(harness: "claude-code", from: now.addingTimeInterval(-60),
+                                         to: now).count, 1)
+    }
+
+    func testRecentClaudeTailCatchesUpWithoutFileChangeAfterBudgetLimit() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3))
+        let first = claudeLine(id: "first", timestamp: stamp) + "\n"
+        let second = claudeLine(id: "second", timestamp: stamp) + "\n"
+        let file = temp.appendingPathComponent("claude/project/active.jsonl")
+        try write(first + second, to: file)
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: temp.appendingPathComponent("claude"))])
+        let cap = first.utf8.count + 30
+        engine.recentClaudeMaxBytes = cap
+        engine.recentClaudeMaxBytesPerFile = cap
+        let firstPass = try engine.scanRecentClaude(now: now)
+        XCTAssertEqual(firstPass.recordsRead, 1)
+        XCTAssertTrue(firstPass.pendingRecentWork)
+        let secondPass = try engine.scanRecentClaude(now: now.addingTimeInterval(1))
+        XCTAssertEqual(secondPass.recordsRead, 1, "Unchanged file still has unread complete data")
+        XCTAssertFalse(secondPass.pendingRecentWork)
+        XCTAssertEqual(try engine.scanRecentClaude(now: now.addingTimeInterval(2)).recordsRead, 0)
+        XCTAssertEqual(try store.records(harness: "claude-code", from: now.addingTimeInterval(-60),
+                                         to: now).count, 2)
+    }
+
+    func testRecentClaudeTailSkipsFourUnchangedFilesBeforeFifthActiveFile() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3))
+        let root = temp.appendingPathComponent("claude")
+        let files = (0..<5).map { root.appendingPathComponent("project/session-\($0).jsonl") }
+        for (index, file) in files.enumerated() {
+            try write(claudeLine(id: "initial-\(index)", timestamp: stamp) + "\n", to: file)
+        }
+        for file in files.prefix(4) {
+            try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+        }
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-2)],
+                                              ofItemAtPath: files[4].path)
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: root)])
+        _ = try engine.scan(now: now)
+        try append(claudeLine(id: "fifth-new", timestamp: stamp) + "\n", to: files[4])
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-1)],
+                                              ofItemAtPath: files[4].path)
+        let result = try engine.scanRecentClaude(now: now)
+        XCTAssertEqual(result.filesScanned, 1, "Four newer unchanged files must not exhaust the cap")
+        XCTAssertEqual(result.recordsRead, 1)
+        XCTAssertFalse(result.pendingRecentWork)
+        XCTAssertEqual(try store.records(harness: "claude-code", from: now.addingTimeInterval(-60),
+                                         to: now).count, 6)
+    }
+
+    func testRecentClaudeTailFileCapReportsPendingInsteadOfCompleteSilence() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3))
+        let root = temp.appendingPathComponent("claude")
+        for index in 0..<2 {
+            try write(claudeLine(id: "capped-\(index)", timestamp: stamp) + "\n",
+                      to: root.appendingPathComponent("project/\(index).jsonl"))
+        }
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: root)])
+        engine.recentClaudeMaxFiles = 1
+        let first = try engine.scanRecentClaude(now: now)
+        XCTAssertEqual(first.filesScanned, 1)
+        XCTAssertTrue(first.pendingRecentWork)
+        let second = try engine.scanRecentClaude(now: now.addingTimeInterval(1))
+        XCTAssertEqual(second.filesScanned, 1)
+        XCTAssertFalse(second.pendingRecentWork)
+    }
+
+    func testRecentClaudeCompleteEventSurvivesAnotherIncompleteSession() throws {
+        let temp = try root()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3))
+        let root = temp.appendingPathComponent("claude")
+        let complete = root.appendingPathComponent("project/complete.jsonl")
+        let partial = root.appendingPathComponent("project/partial.jsonl")
+        try write(claudeLine(id: "complete", timestamp: stamp) + "\n", to: complete)
+        try write(claudeLine(id: "partial", timestamp: stamp), to: partial)
+        let store = try HistoricalUsageStore(url: temp.appendingPathComponent("db/history.sqlite3"))
+        let engine = HistoricalUsageEngine(store: store,
+            sources: [HistoricalSource(harnessID: "claude-code", root: root)])
+        let first = try engine.scanRecentClaude(now: now)
+        XCTAssertEqual(first.recordsRead, 1)
+        XCTAssertTrue(first.pendingRecentWork)
+        XCTAssertEqual(try store.records(harness: "claude-code", from: now.addingTimeInterval(-60),
+                                         to: now).count, 1)
+        let unchanged = try engine.scanRecentClaude(now: now.addingTimeInterval(1))
+        XCTAssertEqual(unchanged.filesScanned, 0)
+        XCTAssertTrue(unchanged.pendingRecentWork)
+        try append("\n", to: partial)
+        let completed = try engine.scanRecentClaude(now: now.addingTimeInterval(2))
+        XCTAssertEqual(completed.recordsRead, 1)
+        XCTAssertFalse(completed.pendingRecentWork)
     }
 
     func testIncrementalCheckpointRestartPartialLineAndRevision() throws {

@@ -12,7 +12,6 @@ enum ClaudeUsageControlReader {
         var usageRequestsSent = 0
         var skipBehaviors = true
         var subscription: String?
-        var liveEndpointEvidence = false
         var modelMessagesReceived = 0
         var bytesReceived = 0
         var leaderReaped = false
@@ -236,7 +235,6 @@ enum ClaudeUsageControlReader {
                                 let evaluation = ClaudeUsageControl.evaluate(payload, observedAt: Date(), subscription: subscription!)
                                 diagnostic.usageReply = evaluation.diagnostic
                                 let report = try evaluation.result.get()
-                                diagnostic.liveEndpointEvidence = true
                                 return .success(report)
                             }
                         }

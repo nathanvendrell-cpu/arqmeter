@@ -1,5 +1,21 @@
 import Foundation
 
+/// Presentation only: a pair is never a harness, provider or usage source.
+public enum SourcePresentationMode: String, Sendable {
+    case single
+    case codexAndClaude
+
+    public static let defaultsKey = "primarySourcePresentationMode"
+
+    public static func load(from defaults: UserDefaults) -> Self {
+        defaults.string(forKey: defaultsKey).flatMap(Self.init(rawValue:)) ?? .single
+    }
+
+    public func save(to defaults: UserDefaults) {
+        defaults.set(rawValue, forKey: Self.defaultsKey)
+    }
+}
+
 /// Display preferences only. Never changes ingestion, quotas or histories.
 public struct SourceLayout: Equatable, Sendable {
     public static let registryIDs = ["codex", "claude-code", "gemini-cli", "ollama"]

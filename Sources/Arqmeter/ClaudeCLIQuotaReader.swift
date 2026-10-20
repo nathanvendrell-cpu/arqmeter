@@ -200,10 +200,15 @@ private enum ClaudeCLICollector {
     static let shared = ClaudeCLIQuotaReader()
     @Published private(set) var state = "En attente du quota officiel Claude Code"
     private let queue = DispatchQueue(label: "com.7agency.arqmeter.claude-cli-quota", qos: .utility)
+    private let instanceID = UUID().uuidString
     private var timer: Timer?, busy = false, generation = 0
     private var cancellation: ClaudeProbeCancellation?
+    // If child cleanup cannot be proved, retain ownership and suspend further
+    // autonomous collection until this app exits; do not release the lease.
+    private var unresolvedCleanupLease: ClaudeCLIReaderLease?
     private var policy: ClaudeCLIRefreshPolicy
     private let stateURL = ClaudeQuotaReport.cacheURL.deletingLastPathComponent().appendingPathComponent("claude-cli-reader-state.json")
+    private let lockURL = ClaudeQuotaReport.cacheURL.deletingLastPathComponent().appendingPathComponent("claude-cli-reader.lock")
     var selected: Bool {
         SourceDisplayPreferences.shared.visibleIDs.contains("claude-code")
     }
@@ -233,55 +238,92 @@ private enum ClaudeCLICollector {
             MainActor.assumeIsolated { self?.refresh() }
         }
     }
+    private func scheduleAfterContention() {
+        guard selected else { return }
+        timer?.invalidate()
+        // No busy loop and no write using this process's possibly stale policy.
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+    }
     func refresh() {
-        guard selected, !busy, policy.failure != .cleanup else { return }
+        guard selected, !busy else { return }
+        guard unresolvedCleanupLease == nil else {
+            state = ClaudeCLIQuotaReport.Failure.cleanup.message; return
+        }
         if let passive = ClaudeQuotaReport.read(), passive.current(at: Date()) != nil {
             state = "Claude Code · relevé reçu automatiquement à \(passive.receivedAt.formatted(.dateTime.hour().minute().second()))"
             // Do not clear a persisted server refusal or renew passive freshness.
             schedule(notBefore: passive.receivedAt.addingTimeInterval(180)); return
         }
+        let lease: ClaudeCLIReaderLease
+        do {
+            guard let acquired = try ClaudeCLIReaderLease.acquire(lockURL: lockURL) else {
+                state = "Lecteur Claude Code actif dans une autre instance"
+                scheduleAfterContention(); return
+            }
+            lease = acquired
+            // Always reload *after* acquiring ownership. A stale in-memory
+            // deadline must never replace a newer persisted refusal.
+            policy = try lease.loadPolicy(from: stateURL)
+        } catch {
+            state = "État du lecteur Claude non lisible · aucun relevé lancé"
+            timer?.invalidate(); timer = nil
+            return
+        }
+        guard policy.failure != .cleanup else { state = policy.failure!.message; return }
         guard policy.permits(at: Date()) else { schedule(); return }
+        let attempt = ClaudeCLIReaderLease.Attempt(instanceID: instanceID, generation: generation)
         let home = FileManager.default.homeDirectoryForCurrentUser
         let paths = [home.appendingPathComponent(".local/bin/claude"), URL(fileURLWithPath: "/opt/homebrew/bin/claude"), URL(fileURLWithPath: "/usr/local/bin/claude")]
-        guard let executable = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else { completed(.failure(.absent)); return }
+        guard let executable = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else {
+            completed(.failure(.absent), diagnostic: .init(), attempt: attempt, lease: lease, accepted: true); return
+        }
         let directory = stateURL.deletingLastPathComponent().appendingPathComponent("claude-code-quota-reader", isDirectory: true)
         do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
-        catch { completed(.failure(.trust)); return }
+        catch { completed(.failure(.trust), diagnostic: .init(), attempt: attempt, lease: lease, accepted: true); return }
         busy = true; timer?.invalidate(); timer = nil
         state = "Lecture du quota officiel Claude Code…"
-        let token = generation, cancellation = ClaudeProbeCancellation(); self.cancellation = cancellation
-        queue.async { [weak self] in
+        let cancellation = ClaudeProbeCancellation(); self.cancellation = cancellation
+        queue.async { [weak self, lease] in
             var diagnostic = ClaudeUsageControlReader.Diagnostic()
             let result = ClaudeUsageControlReader.read(executable: executable, directory: directory, cancelled: { cancellation.cancelled },
                 onDiagnostic: { diagnostic = $0 })
-            // Operational metadata only: no terminal frame, path, transcript or identity.
-            // Records control-exchange metadata and cleanup, never account identities.
-            struct Receipt: Encodable { let observedAt: Date; let transport: ClaudeUsageControlReader.Diagnostic }
-            let diagnosticURL = directory.deletingLastPathComponent().appendingPathComponent("claude-cli-last-reader-diagnostic.json")
-            if let data = try? JSONEncoder().encode(Receipt(observedAt: Date(), transport: diagnostic)), data.count <= 4096 {
-                try? data.write(to: diagnosticURL, options: .atomic)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: diagnosticURL.path)
-            }
-            DispatchQueue.main.async {
-                guard let self, self.generation == token, self.selected else { return }
-                self.busy = false; self.cancellation = nil; self.completed(result)
+            // Child cleanup has completed before either receipt is persisted.
+            DispatchQueue.main.async { [weak self, lease] in
+                guard let self else { return }
+                self.busy = false; self.cancellation = nil
+                if case .failure(.cleanup) = result { self.unresolvedCleanupLease = lease }
+                self.completed(result, diagnostic: diagnostic, attempt: attempt, lease: lease,
+                               accepted: attempt.shouldApply(currentGeneration: self.generation,
+                                                             selected: self.selected, cancelled: cancellation.cancelled))
             }
         }
     }
-    private func completed(_ result: Result<ClaudeCLIQuotaReport, ClaudeCLIQuotaReport.Failure>) {
-        switch result {
-        case .success(let report):
-            do { try report.save(); policy.record(nil, at: Date()); state = "Claude Code · observé à \(report.observedAt.formatted(.dateTime.hour().minute().second()))" }
-            catch { policy.record(.unsupported, at: Date()); state = "Relevé Claude non enregistré" }
-        case .failure(let error): policy.record(error, at: Date()); state = error.message
-        }
-        // A failure never overwrites the real quota report or renews its observation time.
+    private func completed(_ result: Result<ClaudeCLIQuotaReport, ClaudeCLIQuotaReport.Failure>,
+                           diagnostic: ClaudeUsageControlReader.Diagnostic,
+                           attempt: ClaudeCLIReaderLease.Attempt, lease: ClaudeCLIReaderLease, accepted: Bool) {
         do {
-            try FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try JSONEncoder().encode(policy).write(to: stateURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateURL.path)
-        } catch { state += " · état non enregistré" }
-        schedule()
+            let outcome = try lease.complete(result: result, transport: diagnostic, attempt: attempt, accepted: accepted,
+                                             policyURL: stateURL,
+                                             diagnosticURL: stateURL.deletingLastPathComponent().appendingPathComponent("claude-cli-last-reader-diagnostic.json"),
+                                             quotaURL: ClaudeCLIQuotaReport.cacheURL)
+            if let latest = outcome.policy { policy = latest }
+            switch outcome.disposition {
+            case .applied:
+                if let report = outcome.report {
+                    state = "Claude Code · dernier quota reçu à \(report.observedAt.formatted(.dateTime.hour().minute().second())) · fraîcheur serveur inconnue"
+                } else { state = outcome.failure?.message ?? "Relevé Claude non enregistré" }
+                schedule()
+            case .notAppliedCancelled:
+                state = "Lecture Claude annulée · résultat non appliqué"
+            case .notAppliedSuperseded:
+                state = "Lecture Claude dépassée · résultat non appliqué"
+                schedule()
+            case .notAppliedPolicyUnreadable:
+                state = "État du lecteur Claude non lisible · résultat non appliqué"
+            }
+        } catch { state = "Relevé Claude non enregistré · suivi suspendu" }
     }
     /// Same native transport as the normal app, read-only cache/preferences. No WebKit/UI collectors.
     nonisolated static func probe(directory: URL, diagnosticPanelURL: URL? = nil, setupOnly: Bool = false) {

@@ -43,19 +43,87 @@ final class ClaudeUsageControlTests: XCTestCase {
         assertFailure(.unavailable) { _ = try ClaudeUsageControl.subscription(fromPublicAuth: Data(#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","subscriptionType":"pro"}"#.utf8)) }
         assertFailure(.unavailable) { _ = try ClaudeUsageControl.subscription(fromPublicAuth: Data(#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"gateway","subscriptionType":"pro"}"#.utf8)) }
     }
-    func testLiveEndpointWindowsAndResets() throws {
+    func testValidatedControlWindowsAreLastKnownWithoutServerFreshnessProof() throws {
         let report = try ClaudeUsageControl.report(payload(), observedAt: now, subscription: "pro")
-        XCTAssertEqual(report.currentWindow(.fiveHour, at: now)?.remainingPercent, 73)
-        XCTAssertEqual(report.currentWindow(.sevenDay, at: now)?.remainingPercent, 27)
-        XCTAssertNotNil(ClaudePlanQuotaReadout.makeCode(statusLine: nil, cli: report, at: now)?.weekly?.resetsAt)
-        XCTAssertEqual(report.transportKind, "official-get-usage-live")
+        XCTAssertEqual(report.session?.remainingPercent, 73)
+        XCTAssertEqual(report.weekly?.remainingPercent, 27)
+        XCTAssertNotNil(report.weekly?.expiresAt)
+        XCTAssertNil(report.currentWindow(.fiveHour, at: now))
+        XCTAssertNil(report.currentWindow(.sevenDay, at: now))
+        XCTAssertNil(ClaudePlanQuotaReadout.makeCode(statusLine: nil, cli: report, at: now))
+        let menu = ClaudeMenuQuotaSnapshot.make(statusLine: nil, cli: report, at: now)
+        XCTAssertTrue(menu.isLastKnown)
+        XCTAssertEqual(ClaudeMenuQuotaMode.both.text(readout: menu.readout), "73 % - 27 %")
+        XCTAssertEqual(report.transportKind, "official-get-usage-unknown")
+        XCTAssertTrue(report.provenance.contains("fraîcheur serveur inconnue"))
         XCTAssertEqual(report.subscriptionType, "pro")
         XCTAssertNil(report.currentWindow(.sevenDay, at: now.addingTimeInterval(180)))
         XCTAssertEqual(try JSONDecoder().decode(ClaudeCLIQuotaReport.self, from: JSONEncoder().encode(report)), report)
     }
+    func testLegacyLiveCacheIsReadableOnlyAsLastKnown() throws {
+        var legacy = try ClaudeUsageControl.report(payload(), observedAt: now, subscription: "pro")
+        legacy.transportKind = "official-get-usage-live"
+        let archived = try JSONDecoder().decode(ClaudeCLIQuotaReport.self, from: JSONEncoder().encode(legacy))
+        XCTAssertNil(archived.currentWindow(.fiveHour, at: now))
+        XCTAssertNil(ClaudePlanQuotaReadout.makeCode(statusLine: nil, cli: archived, at: now))
+        let menu = ClaudeMenuQuotaSnapshot.make(statusLine: nil, cli: archived, at: now)
+        XCTAssertTrue(menu.isLastKnown)
+        XCTAssertEqual(ClaudeMenuQuotaMode.both.text(readout: menu.readout), "73 % - 27 %")
+        XCTAssertTrue(archived.provenance.contains("fraîcheur serveur inconnue"))
+    }
+    func testRepeatedControlResponseDoesNotRenewLocalReceipt() throws {
+        var previous = try ClaudeUsageControl.report(payload(), observedAt: now, subscription: "pro")
+        previous.transportKind = "official-get-usage-live"
+        let repeated = try ClaudeUsageControl.report(payload(), observedAt: now.addingTimeInterval(120), subscription: "pro")
+        let retained = repeated.preservingEarlierMatchingControlReceipt(previous)
+        XCTAssertEqual(retained.observedAt, now)
+        XCTAssertEqual(retained.transportKind, "official-get-usage-unknown")
+        XCTAssertNil(retained.currentWindow(.fiveHour, at: now.addingTimeInterval(120)))
+
+        var changed = payload()
+        var limits = changed["rate_limits"] as! [String: Any]
+        limits["five_hour"] = ["utilization": 29.0, "resets_at": "2027-01-15T10:00:00Z"]
+        changed["rate_limits"] = limits
+        let newWindow = try ClaudeUsageControl.report(changed, observedAt: now.addingTimeInterval(120), subscription: "pro")
+        XCTAssertEqual(newWindow.preservingEarlierMatchingControlReceipt(previous).observedAt, now.addingTimeInterval(120))
+        XCTAssertNil(newWindow.currentWindow(.fiveHour, at: now.addingTimeInterval(120)))
+
+        limits["five_hour"] = ["utilization": 26.5, "resets_at": "2027-01-15T11:00:00Z"]
+        changed["rate_limits"] = limits
+        let newReset = try ClaudeUsageControl.report(changed, observedAt: now.addingTimeInterval(120), subscription: "pro")
+        XCTAssertEqual(newReset.preservingEarlierMatchingControlReceipt(previous).observedAt, now.addingTimeInterval(120))
+        XCTAssertNil(newReset.currentWindow(.fiveHour, at: now.addingTimeInterval(120)))
+
+        changed = payload(); changed["subscription_type"] = "max"
+        let newPlan = try ClaudeUsageControl.report(changed, observedAt: now.addingTimeInterval(120), subscription: "max")
+        XCTAssertEqual(newPlan.preservingEarlierMatchingControlReceipt(previous).observedAt, now.addingTimeInterval(120))
+    }
     func testNullQuotaDoesNotInventAuthenticationFailure() {
         var p = payload(); p["rate_limits"] = NSNull()
         assertFailure(.unavailable) { _ = try ClaudeUsageControl.report(p, observedAt: now, subscription: "pro") }
+    }
+    func testNullResponseLeavesPersistedLastReceiptUnchanged() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("arqmeter-claude-control-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent("last-receipt.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let prior = try ClaudeUsageControl.report(payload(), observedAt: now, subscription: "pro")
+        try prior.save(url: url)
+        let before = try Data(contentsOf: url)
+        var p = payload(); p["rate_limits"] = NSNull()
+        assertFailure(.unavailable) { _ = try ClaudeUsageControl.report(p, observedAt: now.addingTimeInterval(120), subscription: "pro") }
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        XCTAssertEqual(ClaudeCLIQuotaReport.read(url: url), prior)
+    }
+    func testPassiveReceiptRecoversCurrentFiveHourThenWeeklyWithoutMerging() throws {
+        let control = try ClaudeUsageControl.report(payload(), observedAt: now.addingTimeInterval(-120), subscription: "pro")
+        let passive = try ClaudeQuotaReport.decodeStatusLine(
+            Data(#"{"rate_limits":{"five_hour":{"used_percentage":8,"resets_at":1800018000},"seven_day":{"used_percentage":50,"resets_at":1800500000}}}"#.utf8),
+            receivedAt: now)
+        let snapshot = ClaudeMenuQuotaSnapshot.make(statusLine: passive, cli: control, at: now)
+        XCTAssertFalse(snapshot.isLastKnown)
+        XCTAssertEqual(snapshot.readout?.observedAt, now)
+        XCTAssertEqual(ClaudeMenuQuotaMode.both.text(readout: snapshot.readout), "92 % - 50 %")
+        XCTAssertEqual(ClaudePlanQuotaReadout.makeCode(statusLine: passive, cli: control, at: now)?.session?.remainingPercent, 92)
     }
     func testCachedQuotaCannotReceiveNewTimestamp() {
         var p = payload(); var limits = p["rate_limits"] as! [String: Any]; limits.removeValue(forKey: "model_scoped"); p["rate_limits"] = limits

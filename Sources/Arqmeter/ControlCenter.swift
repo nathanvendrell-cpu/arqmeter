@@ -174,11 +174,17 @@ struct ControlCenterView: View {
     @State private var trialEditor: TrialEditorRequest?
     @State private var coverageRequest: CoverageRequest?
     @State private var showSettings = false
+    @State private var handledSettingsRequestID = 0
     @State private var keyMonitor: Any?
     @State private var now = Date()
+    @State private var recentClaudeConsumer = UUID().uuidString
 
     private let graphite = Color(nsColor: .windowBackgroundColor)
     private let sourceOrder = SourceDisplay.order
+
+    private var primaryFirstSources: [String] {
+        sourcePreferences.menuDisplayOrder
+    }
 
     init(dashboard: DashboardModel, initialMode: String? = nil, onBack: (() -> Void)? = nil) {
         self.dashboard = dashboard
@@ -230,17 +236,34 @@ struct ControlCenterView: View {
         .frame(minWidth: ControlWindowGeometry.minimumSize.width, minHeight: ControlWindowGeometry.minimumSize.height)
         .background { ArqmeterGlassBackdrop() }
         .onAppear {
+            dashboard.selectPrimarySource(sourcePreferences.selectedHistoryID)
+            if dashboard.settingsRequestID > handledSettingsRequestID {
+                handledSettingsRequestID = dashboard.settingsRequestID
+                showSettings = true
+            }
             product.refresh(days: readingMode == "simple" ? 7 : nil)
             trials.load()
-            if readingMode != "simple" { dashboard.startLive(for: "control") }
+            syncControlLiveDemand()
             installKeyboardMonitor()
         }
         .onChange(of: readingMode) { mode in
             UserDefaults.standard.set(mode, forKey: "readingMode")
             product.refresh(days: mode == "simple" ? 7 : nil)
-            if mode == "simple" { dashboard.stopLive(for: "control") } else { dashboard.startLive(for: "control") }
+            syncControlLiveDemand()
+        }
+        .onChange(of: sourcePreferences.selectedHistoryID) {
+            dashboard.selectPrimarySource($0)
+            syncControlLiveDemand()
+        }
+        .onChange(of: sourcePreferences.showsCodexAndClaude) { _ in syncControlLiveDemand() }
+        .onChange(of: product.selectedSection) { _ in syncControlLiveDemand() }
+        .onChange(of: dashboard.settingsRequestID) { requestID in
+            guard requestID > handledSettingsRequestID else { return }
+            handledSettingsRequestID = requestID
+            showSettings = true
         }
         .onDisappear {
+            dashboard.setRecentClaudeVisible(false, for: recentClaudeConsumer)
             if onBack == nil { dashboard.stopLive(for: "control") }
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         }
@@ -269,6 +292,20 @@ struct ControlCenterView: View {
         }
         .sheet(isPresented: $showSettings) { SourceSettingsView(preferences: sourcePreferences) }
         .modifier(ArqmeterWindowFocus())
+    }
+
+    private func syncControlLiveDemand() {
+        // The paired simple overview needs the same Codex local reader already
+        // used by detailed mode; startLive is idempotent for this consumer.
+        if readingMode != "simple" || sourcePreferences.showsCodexAndClaude ||
+           sourcePreferences.selectedHistoryID == "claude-code" {
+            dashboard.startLive(for: "control")
+        } else {
+            dashboard.stopLive(for: "control")
+        }
+        let showsClaude = sourcePreferences.selectedHistoryID == "claude-code" &&
+            (readingMode == "simple" || product.selectedSection == ProductSection.control.rawValue)
+        dashboard.setRecentClaudeVisible(showsClaude, for: recentClaudeConsumer)
     }
 
     private var sidebar: some View {
@@ -366,10 +403,18 @@ struct ControlCenterView: View {
                 Text("\(sourcePreferences.orderedVisibleIDs.count) suivies")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
+            if sourcePreferences.showsCodexAndClaude {
+                CodexClaudePairOverview(model: dashboard, preferences: sourcePreferences,
+                    codexWindow: currentConsumption)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            } else if sourcePreferences.primaryID != "codex" {
+                PrimarySourceActivityView(model: dashboard, compact: true)
+                    .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
             if let error = product.snapshot?.error { notice(error, color: .orange) }
             if let snapshot = product.snapshot {
                 VStack(spacing: 0) {
-                    ForEach(Array(sourcePreferences.orderedVisibleIDs.enumerated()), id: \.element) { offset, harness in
+                    ForEach(Array(primaryFirstSources.enumerated()), id: \.element) { offset, harness in
                         if let coverage = snapshot.coverage.first(where: { $0.harnessID == harness }) {
                             Button {
                                 coverageRequest = CoverageRequest(coverage: coverage,
@@ -379,7 +424,7 @@ struct ControlCenterView: View {
                                     availability: snapshot.availability.first { $0.harnessID == harness })
                             }
                             .buttonStyle(.plain)
-                            if offset < sourcePreferences.orderedVisibleIDs.count - 1 { Divider().padding(.leading, 18) }
+                            if offset < primaryFirstSources.count - 1 { Divider().padding(.leading, 18) }
                         }
                     }
                 }
@@ -545,6 +590,12 @@ struct ControlCenterView: View {
         let fresh = ControlReadout.isFresh(dashboard.local?.sampledAt, now: Date(), within: 10)
         let amount = ControlReadout.dial(window, range: range, sampledAt: dashboard.local?.sampledAt, now: Date())
         return VStack(alignment: .leading, spacing: 14) {
+            if sourcePreferences.showsCodexAndClaude {
+                CodexClaudePairOverview(model: dashboard, preferences: sourcePreferences,
+                    codexWindow: currentConsumption)
+            } else if sourcePreferences.primaryID != "codex" {
+                PrimarySourceActivityView(model: dashboard, showsPicker: true)
+            } else {
             HStack {
                 Label(range.isOfficial ? "Codex · compte" : "Codex · ce Mac", systemImage: "waveform.path")
                     .font(.system(size: 15, weight: .semibold)).foregroundStyle(InstrumentTheme.blue)
@@ -582,9 +633,14 @@ struct ControlCenterView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Divider()
             quotaReadout
+            }
         }
         .panel()
-        .help("Sur 1 min à 24 h : moyenne d’événements réels, comptés à la fin des réponses, pas vitesse instantanée de génération. Entrée, cache inclus, plus sortie. Sur 7/30 j : volumes officiels du compte. Ce cadran n’est ni un quota ni une facture.")
+        .help(sourcePreferences.showsCodexAndClaude
+            ? "Codex et Claude restent séparés : mêmes périodes choisies, sources de tokens et quotas distincts, aucune somme. Claude est un historique local, pas un flux en direct."
+            : sourcePreferences.primaryID == "codex"
+            ? "Sur 1 min à 24 h : moyenne d’événements réels, comptés à la fin des réponses, pas vitesse instantanée de génération. Entrée, cache inclus, plus sortie. Sur 7/30 j : volumes officiels du compte. Ce cadran n’est ni un quota ni une facture."
+            : "Historique local indexé de la source principale : événements observés, pas flux en direct. Sur 1 min à 24 h, la cadence est une moyenne de période ; sur 7/30 j, les volumes restent locaux et ne prouvent ni quota ni facture.")
     }
 
     private func primaryConsumption(_ window: ConsumptionWindow?, range: ConsumptionRange, amount: Double?) -> some View {
@@ -1200,6 +1256,11 @@ private struct SourceCoverageSheet: View {
     }
 }
 
+private enum PrimarySelectionChoice: Hashable {
+    case source(String)
+    case codexAndClaude
+}
+
 struct SourceSettingsView: View {
     @ObservedObject var preferences: SourceDisplayPreferences
     @Environment(\.dismiss) private var dismiss
@@ -1228,13 +1289,25 @@ struct SourceSettingsView: View {
             }
             Divider()
             ClaudeCodeQuotaControls()
-            Picker("Source principale des détails", selection: Binding(
-                get: { preferences.primaryID },
-                set: { preferences.setPrimary($0) })) {
+            Picker("Source principale", selection: Binding<PrimarySelectionChoice>(
+                get: { preferences.showsCodexAndClaude ? .codexAndClaude : .source(preferences.primaryID) },
+                set: { choice in
+                    switch choice {
+                    case .source(let id): preferences.setPrimary(id)
+                    case .codexAndClaude: preferences.showCodexAndClaude()
+                    }
+                })) {
                     ForEach(preferences.orderedVisibleIDs, id: \.self) { id in
-                        Text(SourceDisplay.name(id)).tag(id)
+                        Text(SourceDisplay.name(id)).tag(PrimarySelectionChoice.source(id))
+                    }
+                    if preferences.visibleIDs.isSuperset(of: ["codex", "claude-code"]) {
+                        Text("Codex + Claude").tag(PrimarySelectionChoice.codexAndClaude)
                     }
                 }
+            if !preferences.visibleIDs.isSuperset(of: ["codex", "claude-code"]) {
+                Text("Affichez Codex et Claude pour les voir ensemble.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             Text("Un quota non fourni reste inconnu : il n’est jamais converti en zéro ni ajouté à celui d’une autre source.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
             HStack {

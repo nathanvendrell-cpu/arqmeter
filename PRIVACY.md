@@ -40,6 +40,15 @@ Les anciens chemins expérimentaux Web/Desktop sont conservés dans les sources
 et tests, mais ne sont pas démarrés ni proposés par le parcours courant. Leurs
 anciens caches locaux et historiques ne sont ni effacés ni publiés.
 
+## Vérification des mises à jour
+
+Le support Sparkle n’inspecte ni les quotas, ni les historiques, ni les prompts.
+Les vérifications automatiques, téléchargements/installations automatiques et
+le profil système sont désactivés par défaut. Sans flux HTTPS signé et clé
+publique configurés, le bouton de vérification explique cet état sans réseau.
+Une fois configuré par l’éditeur, le flux utilise les métadonnées HTTP ordinaires
+de Sparkle ; aucun paramètre de suivi personnalisé n’est ajouté.
+
 ## Dans ce dépôt
 
 Liste d'autorisation des fichiers : sources, tests à fixtures, ressources de build,
