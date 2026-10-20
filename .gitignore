@@ -25,6 +25,10 @@
 !scripts/build-updater-candidate.sh
 !scripts/test-updater-signatures.swift
 !UPDATER-HANDOFF.md
+!UPDATE-CONTRACT.md
+!scripts/update-contract.mjs
+!scripts/prepare-sparkle-release.mjs
+!scripts/test-update-contract.mjs
 !.claude-plugin/
 !.claude-plugin/marketplace.json
 !plugins/

@@ -59,6 +59,35 @@ applications jetables signées avant de mettre en service le flux distant.
 
 ## Préparation d’une distribution distante
 
+Le [contrat commun](UPDATE-CONTRACT.md) et le préparateur
+`scripts/prepare-sparkle-release.mjs` sont disponibles sans changer le moteur
+installé. Ils ne créent pas de credential, ne publient ni n’installent rien.
+Le contrat est une proposition à intégrer par les propriétaires AUTORENDER/BRAIN,
+pas une intégration runtime déjà effectuée.
+
+Recette de préparation : **14 tests Node réussis**, dont génération d’un vrai
+appcast signé, archive jetable signée et manifeste JSON à signature détachée avec
+les outils officiels épinglés ; altérations et mauvaise clé refusées. Les tests
+couvrent aussi états, canaux, compatibilité, absence de signature Developer ID,
+sortie déjà présente, parent symlinké et arrêt des processus/enfants sur timeout.
+Fixtures, clés éphémères et caches d’extraction propres aux tests nettoyés.
+La suite Swift de l’app déjà validée n’est pas modifiée par ces scripts/docs.
+
+Sur le Mac de préparation, aucun Developer ID valide n’est disponible ; le
+bundle installé ne contient ni feed ni clé publique, et le dépôt n’a pas de
+secret/variable de publication configuré. Cela ne prouve pas l’absence d’une clé
+privée conservée ailleurs par son propriétaire. Le préparateur refuse l’app
+installée avec `configurationMissing`, sans sortie et sans installation.
+La 1.0.25 et son service ne sont pas modifiés/redémarrés par cette recette.
+
+**Dépendance propriétaire précise** : mettre à disposition une identité Developer
+ID/notarisation utilisable et le signataire Ed25519 approuvé (référence sécurisée,
+jamais une clé collée dans un chat), avec sa clé publique et l’URL de feed retenue.
+L’hébergement peut réutiliser le GitHub existant, sans nouveau compte. Aucune
+création de credential ni publication de flux/binaire de test n’a été effectuée.
+Ensuite, réserver une recette UI contrôlée avec le propriétaire : aucune preuve
+de mise à jour Sparkle installée/reprise/rollback n’est encore revendiquée.
+
 1. Configurer un appcast HTTPS détenu par l’éditeur dans `SUFeedURL`, la clé
    Ed25519 publique dans `SUPublicEDKey` et les hôtes d’archives exacts dans
    `ARQUpdateDownloadHosts`. Conserver la clé privée hors dépôt, bundle et logs.

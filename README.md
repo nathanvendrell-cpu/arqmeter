@@ -105,6 +105,8 @@ Il préserve un candidat déjà présent au lieu de le remplacer silencieusement
 « Rechercher les mises à jour… » est accessible par clic droit dans la barre.
 Le flux HTTPS signé et la clé publique de publication ne sont pas configurés :
 le candidat n’installe donc rien. Voir [le handoff updater](UPDATER-HANDOFF.md).
+La [préparation de distribution et le contrat inter-apps](UPDATE-CONTRACT.md)
+gardent séparés métadonnées, signatures, installation et preuve de relance.
 L’application installée n’est pas remplacée par ces commandes ; ne pas lancer
 une seconde instance pendant une recette. La production nécessite Developer ID,
 notarisation, flux signé et version de build incrémentée.
